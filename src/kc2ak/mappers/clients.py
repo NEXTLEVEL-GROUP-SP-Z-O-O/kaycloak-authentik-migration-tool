@@ -28,10 +28,36 @@ BUILTIN_CLIENT_IDS = frozenset(
     }
 )
 
-# Authentik's own default scopes granted to every OAuth2Provider -- a
-# Keycloak defaultClientScopes entry matching one of these is not lost data,
-# it is the equivalent already present on the authentik side.
+# Authentik's own default scopes -- a Keycloak defaultClientScopes entry
+# matching one of these is not lost data: standard_scope_mappings() below
+# attaches the equivalent to every created provider, gated on the source
+# client declaring it (.chief/milestone-1/_contract/03-entity-mapping.md's
+# "Standard scopes on a created provider"). Before task-5c, a provider
+# created through authentik's API got no property mappings at all -- unlike
+# one created through the UI -- so this comment was previously aspirational,
+# not true.
 _AUTHENTIK_DEFAULT_SCOPES = frozenset({"email", "openid", "profile"})
+
+# Expressions mirror authentik's own shipped managed mappings for these
+# scopes (confirmed live in task-5c against a fresh authentik 2024.10.5),
+# not invented content -- "openid" carries no claims by the OIDC spec
+# itself. Every one uses scope_name="openid" rather than the scope's own
+# name: task-5c confirmed live that a Keycloak *default* client scope's
+# claims are present unconditionally, regardless of what the token request
+# asks for, while an authentik ScopeMapping only fires when its own
+# scope_name is in the request. "openid" is the only scope_name guaranteed
+# present on every OIDC request, so it is the one choice that reproduces
+# Keycloak's actual behaviour instead of silently dropping these claims
+# whenever a client happens to request a narrower scope than usual.
+_STANDARD_SCOPE_EXPRESSIONS = {
+    "openid": "return {}",
+    "profile": (
+        "return {'name': user.name, 'given_name': user.name, "
+        "'preferred_username': user.username, 'nickname': user.username, "
+        "'groups': [g.name for g in user.ak_groups.all()]}"
+    ),
+    "email": "return {'email': user.email, 'email_verified': True}",
+}
 
 # Per-client token lifespan overrides live in Keycloak's free-form
 # `attributes` map, not as top-level fields.
@@ -107,6 +133,33 @@ def map_application(client_id: str, provider_pk: int, name: str | None = None) -
         "slug": slugify(client_id),
         "provider": provider_pk,
     }
+
+
+def standard_scope_mappings(kc_client: dict[str, Any], client_id: str) -> list[dict[str, Any]]:
+    """ScopeMapping create payloads for authentik's standard openid/profile/
+    email claims, gated on the source client
+    (.chief/milestone-1/_contract/03-entity-mapping.md's "Standard scopes on
+    a created provider"). `openid` is always included; `profile`/`email`
+    only when the Keycloak client declares them in `defaultClientScopes` or
+    `optionalClientScopes` -- attaching them unconditionally would widen a
+    token for a client whose admin deliberately removed one, which is as
+    silent a change as dropping claims and the harder one to notice. A scope
+    in neither list is faithfully reproduced by attaching nothing, so it is
+    never reported in `unmapped`.
+    """
+    declared = set(kc_client.get("defaultClientScopes") or []) | set(
+        kc_client.get("optionalClientScopes") or []
+    )
+    scopes = ["openid", *(s for s in ("profile", "email") if s in declared)]
+    return [
+        {
+            "name": f"kc2ak: {client_id} / standard-{scope}",
+            "scope_name": "openid",
+            "description": "",
+            "expression": _STANDARD_SCOPE_EXPRESSIONS[scope],
+        }
+        for scope in scopes
+    ]
 
 
 def unmapped_client_fields(kc_client: dict[str, Any]) -> list[dict[str, str]]:

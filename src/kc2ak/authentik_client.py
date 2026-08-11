@@ -156,6 +156,19 @@ class AuthentikClient:
             self._client, "PATCH", f"/api/v3/providers/oauth2/{pk}/", json=payload
         )
 
+    def find_scope_mapping_by_name(self, name: str) -> dict[str, Any] | None:
+        """Exact-match lookup on ScopeMapping's globally-unique `name` --
+        used to find-or-create so a run interrupted between mapping
+        creation and provider creation converges on rerun instead of 400ing
+        on `create_scope_mapping`'s duplicate-name rejection (task-5c).
+        """
+        response = request_with_retry(
+            self._client, "GET", "/api/v3/propertymappings/provider/scope/", params={"name": name}
+        )
+        response.raise_for_status()
+        results: list[dict[str, Any]] = response.json().get("results", [])
+        return results[0] if results else None
+
     def create_scope_mapping(self, payload: dict[str, Any]) -> httpx.Response:
         """POST /api/v3/propertymappings/provider/scope/. Raw response, same
         convention as create_provider/create_application. `name` must be

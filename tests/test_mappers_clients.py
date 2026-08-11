@@ -14,6 +14,7 @@ from kc2ak.mappers.clients import (
     map_provider,
     map_redirect_uri,
     slugify,
+    standard_scope_mappings,
     unmapped_client_fields,
 )
 
@@ -207,3 +208,63 @@ def test_unmapped_flags_token_lifespan_attributes() -> None:
     }
     entries = unmapped_client_fields(kc_client)
     assert any(e["name"] == "token_lifespans" for e in entries)
+
+
+# --- standard_scope_mappings (task-5c) ---------------------------------------
+
+
+def test_standard_scope_mappings_openid_only_always_present() -> None:
+    kc_client = {"clientId": "no-scopes", "defaultClientScopes": [], "optionalClientScopes": []}
+    payloads = standard_scope_mappings(kc_client, "no-scopes")
+    assert [p["name"] for p in payloads] == ["kc2ak: no-scopes / standard-openid"]
+    assert payloads[0]["scope_name"] == "openid"
+    assert payloads[0]["expression"] == "return {}"
+
+
+def test_standard_scope_mappings_gated_on_default_client_scopes() -> None:
+    kc_client = _clients()["confidential-app"]
+    payloads = standard_scope_mappings(kc_client, "confidential-app")
+    names = {p["name"] for p in payloads}
+    # confidential-app's fixture declares "profile" and "email" in
+    # defaultClientScopes -- both must be attached alongside openid.
+    assert names == {
+        "kc2ak: confidential-app / standard-openid",
+        "kc2ak: confidential-app / standard-profile",
+        "kc2ak: confidential-app / standard-email",
+    }
+    assert all(p["scope_name"] == "openid" for p in payloads)
+
+
+def test_standard_scope_mappings_gated_on_optional_client_scopes_too() -> None:
+    kc_client = {
+        "clientId": "opt-scope-app",
+        "defaultClientScopes": [],
+        "optionalClientScopes": ["email"],
+    }
+    payloads = standard_scope_mappings(kc_client, "opt-scope-app")
+    names = {p["name"] for p in payloads}
+    assert names == {
+        "kc2ak: opt-scope-app / standard-openid",
+        "kc2ak: opt-scope-app / standard-email",
+    }
+
+
+def test_standard_scope_mappings_absent_scope_is_not_attached() -> None:
+    # The negative case: a scope declared in neither list is faithfully
+    # reproduced by attaching nothing -- not widened, not reported as
+    # unmapped (.chief/milestone-1/_contract/03-entity-mapping.md).
+    kc_client = {
+        "clientId": "profile-only",
+        "defaultClientScopes": ["profile"],
+        "optionalClientScopes": [],
+    }
+    payloads = standard_scope_mappings(kc_client, "profile-only")
+    names = {p["name"] for p in payloads}
+    assert "kc2ak: profile-only / standard-email" not in names
+    assert "kc2ak: profile-only / standard-profile" in names
+
+
+def test_standard_scope_mappings_missing_scope_lists_still_attaches_openid() -> None:
+    kc_client = {"clientId": "bare"}
+    payloads = standard_scope_mappings(kc_client, "bare")
+    assert [p["name"] for p in payloads] == ["kc2ak: bare / standard-openid"]

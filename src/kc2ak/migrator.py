@@ -22,6 +22,7 @@ from kc2ak.mappers.clients import (
     map_application,
     map_provider,
     slugify,
+    standard_scope_mappings,
     unmapped_client_fields,
 )
 from kc2ak.mappers.groups import NESTED_GROUPS_UNSUPPORTED, is_nested, map_group
@@ -366,15 +367,19 @@ def migrate_clients(
     computed unconditionally for every client, same as
     unmapped_client_fields -- so `unmapped` carries whitelist misses on a
     dry run and on a SKIPPED/UPDATED match too, not only on a fresh
-    CREATED. ScopeMapping objects are only actually created and attached
-    (via property_mappings) on the brand-new-provider path -- a match
-    (SKIPPED/UPDATED) or the half-created-pair repair never (re)creates
-    them, both to avoid ScopeMapping's global name-uniqueness constraint
-    rejecting a second attempt and because mapper attachment isn't part of
-    --update-existing's scope in this milestone. An interrupted run that
-    fails between mapping creation and provider creation therefore leaves
-    orphan ScopeMapping rows on rerun -- a known gap, deferred rather than
-    silently patched over.
+    CREATED. ScopeMapping objects (both the protocol-mapper translations and
+    mappers.clients.standard_scope_mappings' openid/profile/email copies,
+    task-5c) are only actually created and attached (via property_mappings)
+    on the brand-new-provider path -- a match (SKIPPED/UPDATED) or the
+    half-created-pair repair never (re)creates them, since mapper attachment
+    isn't part of --update-existing's scope in this milestone (deliberately
+    deferred, not a gap). Creation is find-or-create by name
+    (AuthentikClient.find_scope_mapping_by_name) rather than a plain create:
+    ScopeMapping.name is globally unique in authentik, so a run interrupted
+    between mapping creation and provider creation would otherwise 400 on
+    every rerun attempt forever -- find-or-create is what makes that rerun
+    converge instead, per .chief/milestone-1/_goal/03-idempotency-and-matching.md's
+    "interrupted run completes without duplicates" done-condition.
     """
     results: list[EntityResult] = []
 
@@ -468,9 +473,22 @@ def migrate_clients(
                 )
                 continue
 
+            all_mapper_payloads = [
+                *standard_scope_mappings(kc_client, client_id),
+                *mapper_payloads,
+            ]
             mapper_pks: list[str] = []
             mapper_create_failed = False
-            for mapper_payload in mapper_payloads:
+            for mapper_payload in all_mapper_payloads:
+                # Find-or-create: ScopeMapping.name is globally unique, so a
+                # run interrupted between mapping creation and provider
+                # creation would 400 on a plain create on rerun -- this is
+                # what makes that rerun converge instead of leaving the
+                # client permanently FAILED (task-5c).
+                existing_mapping = ak.find_scope_mapping_by_name(mapper_payload["name"])
+                if existing_mapping is not None:
+                    mapper_pks.append(existing_mapping["pk"])
+                    continue
                 mapping_response = ak.create_scope_mapping(mapper_payload)
                 if mapping_response.status_code >= 400:
                     mapper_create_failed = True

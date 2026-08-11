@@ -85,6 +85,7 @@ class FakeAuthentikClients:
         self.update_provider_calls = 0
         self.create_application_calls = 0
         self.create_scope_mapping_calls = 0
+        self.find_scope_mapping_calls = 0
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -130,6 +131,13 @@ class FakeAuthentikClients:
             record = {**body}
             self.applications[body["slug"]] = record
             return httpx.Response(201, json=record)
+
+        if path == "/api/v3/propertymappings/provider/scope/" and method == "GET":
+            self.find_scope_mapping_calls += 1
+            name = request.url.params.get("name")
+            existing = self.scope_mappings.get(name or "")
+            results = [existing] if existing else []
+            return httpx.Response(200, json={"pagination": {}, "results": results})
 
         if path == "/api/v3/propertymappings/provider/scope/" and method == "POST":
             self.create_scope_mapping_calls += 1
@@ -254,11 +262,19 @@ def test_migrate_clients_creates_and_attaches_scope_mappings_under_apply() -> No
     )
 
     # 7 of confidential-app's 8 fixture mappers are whitelisted-type
-    # instances (realm-roles is the one outside the whitelist).
-    assert fake.create_scope_mapping_calls == 7
+    # instances (realm-roles is the one outside the whitelist), plus 3
+    # standard-scope copies (openid always; profile/email are both in the
+    # fixture's defaultClientScopes -- task-5c).
+    assert fake.create_scope_mapping_calls == 10
     provider = next(iter(fake.providers.values()))
-    assert len(provider["property_mappings"]) == 7
+    assert len(provider["property_mappings"]) == 10
     assert set(provider["property_mappings"]) == {m["pk"] for m in fake.scope_mappings.values()}
+    standard_names = {
+        "kc2ak: confidential-app / standard-openid",
+        "kc2ak: confidential-app / standard-profile",
+        "kc2ak: confidential-app / standard-email",
+    }
+    assert standard_names <= {m["name"] for m in fake.scope_mappings.values()}
     mapping_names = {m["name"] for m in fake.scope_mappings.values()}
     assert "kc2ak: confidential-app / username" in mapping_names
     username_mapping = next(
@@ -344,9 +360,10 @@ def test_migrate_clients_scope_mapping_create_failure_marks_client_failed() -> N
     assert fake.create_provider_calls == 0  # never reached -- mapper create failed first
 
 
-def test_migrate_clients_no_protocol_mappers_creates_provider_without_property_mappings_field() -> (
-    None
-):
+def test_migrate_clients_no_protocol_mappers_still_attaches_standard_openid_only() -> None:
+    # "openid" is always attached (task-5c), even for a client with no
+    # protocol mappers and no defaultClientScopes/optionalClientScopes at
+    # all -- profile/email are not, since neither is declared.
     fake = FakeAuthentikClients()
     kc_client = {
         "id": "pub-1",
@@ -357,9 +374,11 @@ def test_migrate_clients_no_protocol_mappers_creates_provider_without_property_m
     }
     _run(fake, [kc_client], apply=True)
 
-    assert fake.create_scope_mapping_calls == 0
+    assert fake.create_scope_mapping_calls == 1
     provider = next(iter(fake.providers.values()))
-    assert "property_mappings" not in provider
+    assert len(provider["property_mappings"]) == 1
+    (mapping,) = fake.scope_mappings.values()
+    assert mapping["name"] == "kc2ak: no-mappers-app / standard-openid"
 
 
 def test_unmapped_mapper_forces_exit_code_1_with_outcome_still_created() -> None:
@@ -377,6 +396,42 @@ def test_unmapped_mapper_forces_exit_code_1_with_outcome_still_created() -> None
     assert results[0].outcome == CREATED
     assert any(e["type"] == "protocol_mapper" for e in results[0].unmapped)
     assert exit_code(results) == 1
+
+
+def test_migrate_clients_interrupted_between_mapping_and_provider_create_converges_on_rerun() -> (
+    None
+):
+    # task-5c: a run killed after ScopeMapping creation but before the
+    # provider POST leaves orphan mappings -- ScopeMapping.name is globally
+    # unique, so a plain create on rerun would 400 on every one of them
+    # forever. Find-or-create is what makes the rerun converge instead
+    # (.chief/milestone-1/_goal/03-idempotency-and-matching.md's
+    # "interrupted run completes without duplicates").
+    fake = FakeAuthentikClients()
+    kc_client = _confidential_app_client()
+
+    # Simulate the interrupted first run: every mapping this client would
+    # produce already exists, but no provider/application do.
+    from kc2ak.mappers.clients import standard_scope_mappings
+    from kc2ak.mappers.protocol_mappers import translate_client_protocol_mappers
+
+    mapper_payloads, _unmapped = translate_client_protocol_mappers(kc_client, "confidential-app")
+    all_payloads = standard_scope_mappings(kc_client, "confidential-app") + mapper_payloads
+    for payload in all_payloads:
+        fake._scope_mapping_seq += 1
+        pk = f"mapping-{fake._scope_mapping_seq}"
+        fake.scope_mappings[payload["name"]] = {"pk": pk, **payload}
+
+    results = _run(
+        fake, [kc_client], apply=True, secrets={kc_client["id"]: "kc2ak-test-client-secret"}
+    )
+
+    assert results[0].outcome == CREATED
+    assert fake.create_scope_mapping_calls == 0  # every mapping found, none re-created
+    assert fake.find_scope_mapping_calls == len(all_payloads)
+    provider = next(iter(fake.providers.values()))
+    assert len(provider["property_mappings"]) == len(all_payloads)
+    assert set(provider["property_mappings"]) == {m["pk"] for m in fake.scope_mappings.values()}
 
 
 def test_migrate_clients_public_client_has_no_secret_field() -> None:
@@ -414,10 +469,7 @@ def test_migrate_clients_failed_provider_create_does_not_abort_run() -> None:
     def failing_handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/v3/flows/instances/":
             return fake.handler(request)
-        if (
-            request.url.path == "/api/v3/propertymappings/provider/scope/"
-            and request.method == "POST"
-        ):
+        if request.url.path == "/api/v3/propertymappings/provider/scope/":
             return fake.handler(request)
         if request.url.path == "/api/v3/providers/oauth2/" and request.method == "GET":
             return httpx.Response(200, json={"pagination": {}, "results": []})
