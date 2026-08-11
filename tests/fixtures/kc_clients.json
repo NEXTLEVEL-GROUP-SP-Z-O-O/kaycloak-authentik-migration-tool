@@ -232,7 +232,77 @@
     "nodeReRegistrationTimeout": -1,
     "protocolMappers": [
       {
-        "id": "6f4fa3d6-4459-4028-8594-3905586d1ef7",
+        "id": "0b52a761-3a67-4398-9077-ba7ef3217b2f",
+        "name": "email-attr",
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-usermodel-property-mapper",
+        "consentRequired": false,
+        "config": {
+          "user.attribute": "email",
+          "id.token.claim": "true",
+          "access.token.claim": "true",
+          "claim.name": "email",
+          "jsonType.label": "String"
+        }
+      },
+      {
+        "id": "e50b349d-da8d-442d-8463-1a436fccf9af",
+        "name": "groups",
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-group-membership-mapper",
+        "consentRequired": false,
+        "config": {
+          "full.path": "false",
+          "id.token.claim": "true",
+          "access.token.claim": "true",
+          "claim.name": "groups"
+        }
+      },
+      {
+        "id": "d65ab05c-91fc-42b6-8a34-97e3a821c4f2",
+        "name": "custom-attr",
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-usermodel-attribute-mapper",
+        "consentRequired": false,
+        "config": {
+          "user.attribute": "department",
+          "id.token.claim": "true",
+          "access.token.claim": "true",
+          "claim.name": "department",
+          "jsonType.label": "String"
+        }
+      },
+      {
+        "id": "015c9dd3-909e-47d1-b971-ca39ce455cd0",
+        "name": "hardcoded",
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-hardcoded-claim-mapper",
+        "consentRequired": false,
+        "config": {
+          "id.token.claim": "true",
+          "access.token.claim": "true",
+          "claim.name": "kc2ak_probe",
+          "jsonType.label": "String",
+          "claim.value": "probe-value"
+        }
+      },
+      {
+        "id": "f75537b1-3ac2-4bb9-bfbd-3de52cd863a7",
+        "name": "realm-roles",
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-usermodel-realm-role-mapper",
+        "consentRequired": false,
+        "config": {
+          "id.token.claim": "true",
+          "access.token.claim": "true",
+          "claim.name": "realm_access.roles",
+          "jsonType.label": "String",
+          "multivalued": "true",
+          "userinfo.token.claim": "true"
+        }
+      },
+      {
+        "id": "b196bdbe-28f8-4608-928a-02ff5a096be6",
         "name": "username",
         "protocol": "openid-connect",
         "protocolMapper": "oidc-usermodel-property-mapper",
@@ -247,18 +317,26 @@
         }
       },
       {
-        "id": "d03bb855-823d-410f-bb57-d47144841710",
-        "name": "realm-roles",
+        "id": "29c3e78b-2592-4b83-a430-a5e7213a34fe",
+        "name": "full-name",
         "protocol": "openid-connect",
-        "protocolMapper": "oidc-usermodel-realm-role-mapper",
+        "protocolMapper": "oidc-full-name-mapper",
         "consentRequired": false,
         "config": {
           "id.token.claim": "true",
-          "access.token.claim": "true",
-          "claim.name": "realm_access.roles",
-          "jsonType.label": "String",
-          "multivalued": "true",
-          "userinfo.token.claim": "true"
+          "access.token.claim": "true"
+        }
+      },
+      {
+        "id": "d8a4b85d-848a-4b68-ae59-ab0408b9164e",
+        "name": "audience",
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-audience-mapper",
+        "consentRequired": false,
+        "config": {
+          "included.client.audience": "confidential-app",
+          "id.token.claim": "true",
+          "access.token.claim": "true"
         }
       }
     ],

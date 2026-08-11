@@ -156,6 +156,17 @@ class AuthentikClient:
             self._client, "PATCH", f"/api/v3/providers/oauth2/{pk}/", json=payload
         )
 
+    def create_scope_mapping(self, payload: dict[str, Any]) -> httpx.Response:
+        """POST /api/v3/propertymappings/provider/scope/. Raw response, same
+        convention as create_provider/create_application. `name` must be
+        globally unique across every property mapping on the instance --
+        confirmed live (a duplicate name 400s) -- so callers derive it from
+        client_id + the Keycloak mapper's own name.
+        """
+        return request_with_retry(
+            self._client, "POST", "/api/v3/propertymappings/provider/scope/", json=payload
+        )
+
     def find_application_by_slug(self, slug: str) -> dict[str, Any] | None:
         """Exact-match lookup on the application's slug."""
         response = request_with_retry(

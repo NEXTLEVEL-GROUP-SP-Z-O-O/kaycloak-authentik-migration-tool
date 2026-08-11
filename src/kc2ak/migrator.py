@@ -25,6 +25,7 @@ from kc2ak.mappers.clients import (
     unmapped_client_fields,
 )
 from kc2ak.mappers.groups import NESTED_GROUPS_UNSUPPORTED, is_nested, map_group
+from kc2ak.mappers.protocol_mappers import translate_client_protocol_mappers
 from kc2ak.mappers.users import map_user
 
 CREATED = "CREATED"
@@ -360,6 +361,20 @@ def migrate_clients(
     of --update-existing -- creating a missing counterpart is not modifying
     an existing object, and skipping it would leave re-runs permanently
     incomplete.
+
+    Protocol mapper translation (mappers.protocol_mappers, task-5b) is
+    computed unconditionally for every client, same as
+    unmapped_client_fields -- so `unmapped` carries whitelist misses on a
+    dry run and on a SKIPPED/UPDATED match too, not only on a fresh
+    CREATED. ScopeMapping objects are only actually created and attached
+    (via property_mappings) on the brand-new-provider path -- a match
+    (SKIPPED/UPDATED) or the half-created-pair repair never (re)creates
+    them, both to avoid ScopeMapping's global name-uniqueness constraint
+    rejecting a second attempt and because mapper attachment isn't part of
+    --update-existing's scope in this milestone. An interrupted run that
+    fails between mapping creation and provider creation therefore leaves
+    orphan ScopeMapping rows on rerun -- a known gap, deferred rather than
+    silently patched over.
     """
     results: list[EntityResult] = []
 
@@ -380,7 +395,8 @@ def migrate_clients(
         name = kc_client.get("name") or client_id
         slug = slugify(client_id)
         is_public = kc_client.get("publicClient", False)
-        unmapped = unmapped_client_fields(kc_client)
+        mapper_payloads, mapper_unmapped = translate_client_protocol_mappers(kc_client, client_id)
+        unmapped = unmapped_client_fields(kc_client) + mapper_unmapped
 
         try:
             secret = None if is_public else kc.get_client_secret(realm, kc_id)
@@ -451,6 +467,20 @@ def migrate_clients(
                     EntityResult("client", kc_id, client_id, None, CREATED, unmapped=unmapped)
                 )
                 continue
+
+            mapper_pks: list[str] = []
+            mapper_create_failed = False
+            for mapper_payload in mapper_payloads:
+                mapping_response = ak.create_scope_mapping(mapper_payload)
+                if mapping_response.status_code >= 400:
+                    mapper_create_failed = True
+                    break
+                mapper_pks.append(mapping_response.json()["pk"])
+            if mapper_create_failed:
+                results.append(EntityResult("client", kc_id, client_id, None, FAILED, API_REJECTED))
+                continue
+            if mapper_pks:
+                mapped_provider["property_mappings"] = mapper_pks
 
             provider_response = ak.create_provider(mapped_provider)
             if provider_response.status_code >= 400:

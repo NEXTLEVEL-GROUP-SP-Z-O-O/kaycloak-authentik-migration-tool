@@ -1,10 +1,11 @@
 """Keycloak OIDC client -> Authentik OAuth2Provider + Application mapping.
 Pure: no I/O. See .chief/milestone-1/_contract/03-entity-mapping.md.
 
-Protocol mapper translation (the whitelist -> ScopeMapping) is task-5b, not
-this module -- deliberately left untouched. `unmapped_client_fields` covers
-only the contract's "Not carried over" list; 5b appends protocol-mapper
-entries to the same `unmapped` list the migrator builds per entity.
+Protocol mapper translation (the whitelist -> ScopeMapping) lives in
+mappers/protocol_mappers.py, not this module. `unmapped_client_fields`
+below covers only the contract's "Not carried over" list; migrate_clients
+in migrator.py merges it with protocol_mappers.translate_client_protocol_mappers'
+own unmapped entries into the same per-entity `unmapped` list.
 """
 
 from __future__ import annotations

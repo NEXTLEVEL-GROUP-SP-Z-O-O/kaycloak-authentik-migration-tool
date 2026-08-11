@@ -78,10 +78,13 @@ class FakeAuthentikClients:
         self.flows = {AUTH_FLOW_SLUG: AUTH_FLOW_PK, INV_FLOW_SLUG: INV_FLOW_PK}
         self.providers: dict[int, dict[str, Any]] = {}
         self.applications: dict[str, dict[str, Any]] = {}
+        self.scope_mappings: dict[str, dict[str, Any]] = {}
         self._provider_seq = 0
+        self._scope_mapping_seq = 0
         self.create_provider_calls = 0
         self.update_provider_calls = 0
         self.create_application_calls = 0
+        self.create_scope_mapping_calls = 0
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -126,6 +129,19 @@ class FakeAuthentikClients:
             body = json.loads(request.content)
             record = {**body}
             self.applications[body["slug"]] = record
+            return httpx.Response(201, json=record)
+
+        if path == "/api/v3/propertymappings/provider/scope/" and method == "POST":
+            self.create_scope_mapping_calls += 1
+            body = json.loads(request.content)
+            if body["name"] in self.scope_mappings:
+                return httpx.Response(
+                    400, json={"name": ["Property Mapping with this name already exists."]}
+                )
+            self._scope_mapping_seq += 1
+            pk = f"mapping-{self._scope_mapping_seq}"
+            record = {"pk": pk, **body}
+            self.scope_mappings[body["name"]] = record
             return httpx.Response(201, json=record)
 
         raise AssertionError(f"unexpected Authentik request: {method} {path}")
@@ -227,6 +243,142 @@ def test_migrate_clients_reports_unmapped_fields_and_stays_created() -> None:
     assert "defaultClientScopes" in names
 
 
+# --- protocol mapper whitelist (task-5b) ------------------------------------
+
+
+def test_migrate_clients_creates_and_attaches_scope_mappings_under_apply() -> None:
+    fake = FakeAuthentikClients()
+    kc_client = _confidential_app_client()
+    results = _run(
+        fake, [kc_client], apply=True, secrets={kc_client["id"]: "kc2ak-test-client-secret"}
+    )
+
+    # 7 of confidential-app's 8 fixture mappers are whitelisted-type
+    # instances (realm-roles is the one outside the whitelist).
+    assert fake.create_scope_mapping_calls == 7
+    provider = next(iter(fake.providers.values()))
+    assert len(provider["property_mappings"]) == 7
+    assert set(provider["property_mappings"]) == {m["pk"] for m in fake.scope_mappings.values()}
+    mapping_names = {m["name"] for m in fake.scope_mappings.values()}
+    assert "kc2ak: confidential-app / username" in mapping_names
+    username_mapping = next(
+        m for m in fake.scope_mappings.values() if m["name"] == "kc2ak: confidential-app / username"
+    )
+    assert username_mapping["expression"] == "return {'preferred_username': user.username}"
+    assert username_mapping["scope_name"] == "openid"
+
+    result = results[0]
+    unmapped_types = {e["mapper_type"] for e in result.unmapped if e["type"] == "protocol_mapper"}
+    assert unmapped_types == {"oidc-usermodel-realm-role-mapper"}
+
+
+def test_migrate_clients_dry_run_reports_unmapped_mapper_without_creating_any() -> None:
+    fake = FakeAuthentikClients()
+    kc_client = _confidential_app_client()
+    results = _run(
+        fake, [kc_client], apply=False, secrets={kc_client["id"]: "kc2ak-test-client-secret"}
+    )
+
+    assert fake.create_scope_mapping_calls == 0
+    result = results[0]
+    assert result.outcome == CREATED
+    unmapped_types = {e["mapper_type"] for e in result.unmapped if e["type"] == "protocol_mapper"}
+    assert unmapped_types == {"oidc-usermodel-realm-role-mapper"}
+
+
+def test_migrate_clients_skipped_match_never_creates_scope_mappings() -> None:
+    # A matched (SKIPPED) provider must not re-attempt mapper creation --
+    # ScopeMapping.name is globally unique, so a second attempt would 400.
+    fake = FakeAuthentikClients()
+    fake.providers[1] = {
+        "pk": 1,
+        "client_id": "confidential-app",
+        "client_type": "confidential",
+    }
+    fake.applications["confidential-app"] = {"slug": "confidential-app", "provider": 1}
+    kc_client = _confidential_app_client()
+
+    results = _run(
+        fake, [kc_client], apply=True, secrets={kc_client["id"]: "kc2ak-test-client-secret"}
+    )
+
+    assert results[0].outcome == SKIPPED
+    assert fake.create_scope_mapping_calls == 0
+    # unmapped is still reported on a SKIPPED match -- it's a property of
+    # what was read from Keycloak, not of whether anything was written.
+    unmapped_types = {
+        e["mapper_type"] for e in results[0].unmapped if e["type"] == "protocol_mapper"
+    }
+    assert unmapped_types == {"oidc-usermodel-realm-role-mapper"}
+
+
+def test_migrate_clients_scope_mapping_create_failure_marks_client_failed() -> None:
+    fake = FakeAuthentikClients()
+
+    def failing_mapping_handler(request: httpx.Request) -> httpx.Response:
+        if (
+            request.url.path == "/api/v3/propertymappings/provider/scope/"
+            and request.method == "POST"
+        ):
+            return httpx.Response(500, json={"detail": "boom"})
+        return fake.handler(request)
+
+    ak = AuthentikClient(
+        "http://ak.example", "tok", transport=httpx.MockTransport(failing_mapping_handler)
+    )
+    kc_client = _confidential_app_client()
+    kc = _kc_client(clients=[kc_client], secrets={kc_client["id"]: "kc2ak-test-client-secret"})
+
+    results = migrate_clients(
+        kc,
+        ak,
+        "kc2ak-test",
+        apply=True,
+        authorization_flow=AUTH_FLOW_SLUG,
+        invalidation_flow=INV_FLOW_SLUG,
+    )
+
+    assert len(results) == 1
+    assert results[0].outcome == FAILED
+    assert results[0].reason == API_REJECTED
+    assert fake.create_provider_calls == 0  # never reached -- mapper create failed first
+
+
+def test_migrate_clients_no_protocol_mappers_creates_provider_without_property_mappings_field() -> (
+    None
+):
+    fake = FakeAuthentikClients()
+    kc_client = {
+        "id": "pub-1",
+        "clientId": "no-mappers-app",
+        "protocol": "openid-connect",
+        "publicClient": True,
+        "redirectUris": [],
+    }
+    _run(fake, [kc_client], apply=True)
+
+    assert fake.create_scope_mapping_calls == 0
+    provider = next(iter(fake.providers.values()))
+    assert "property_mappings" not in provider
+
+
+def test_unmapped_mapper_forces_exit_code_1_with_outcome_still_created() -> None:
+    # The rule most likely to be got wrong per the task brief: an
+    # unrecognised protocol mapper is not a CONFLICT (the provider *was*
+    # written), but a non-empty `unmapped` anywhere still forces exit 1.
+    from kc2ak.report import exit_code
+
+    fake = FakeAuthentikClients()
+    kc_client = _confidential_app_client()
+    results = _run(
+        fake, [kc_client], apply=True, secrets={kc_client["id"]: "kc2ak-test-client-secret"}
+    )
+
+    assert results[0].outcome == CREATED
+    assert any(e["type"] == "protocol_mapper" for e in results[0].unmapped)
+    assert exit_code(results) == 1
+
+
 def test_migrate_clients_public_client_has_no_secret_field() -> None:
     fake = FakeAuthentikClients()
     kc_client = {
@@ -261,6 +413,11 @@ def test_migrate_clients_failed_provider_create_does_not_abort_run() -> None:
 
     def failing_handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/v3/flows/instances/":
+            return fake.handler(request)
+        if (
+            request.url.path == "/api/v3/propertymappings/provider/scope/"
+            and request.method == "POST"
+        ):
             return fake.handler(request)
         if request.url.path == "/api/v3/providers/oauth2/" and request.method == "GET":
             return httpx.Response(200, json={"pagination": {}, "results": []})
