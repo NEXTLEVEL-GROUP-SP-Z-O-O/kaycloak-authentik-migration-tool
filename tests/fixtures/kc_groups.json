@@ -1,0 +1,44 @@
+[
+    {
+        "id": "11111111-0000-0000-0000-000000000001",
+        "name": "engineering",
+        "path": "/engineering",
+        "subGroupCount": 0,
+        "subGroups": [],
+        "access": {
+            "view": true,
+            "viewMembers": true,
+            "manageMembers": true,
+            "manage": true,
+            "manageMembership": true
+        }
+    },
+    {
+        "id": "11111111-0000-0000-0000-000000000002",
+        "name": "marketing",
+        "path": "/marketing",
+        "subGroupCount": 0,
+        "subGroups": [],
+        "access": {
+            "view": true,
+            "viewMembers": true,
+            "manageMembers": true,
+            "manage": true,
+            "manageMembership": true
+        }
+    },
+    {
+        "id": "11111111-0000-0000-0000-000000000003",
+        "name": "sales",
+        "path": "/sales",
+        "subGroupCount": 1,
+        "subGroups": [],
+        "access": {
+            "view": true,
+            "viewMembers": true,
+            "manageMembers": true,
+            "manage": true,
+            "manageMembership": true
+        }
+    }
+]

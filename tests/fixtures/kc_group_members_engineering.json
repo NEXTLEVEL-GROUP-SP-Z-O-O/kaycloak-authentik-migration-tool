@@ -1,0 +1,28 @@
+[
+    {
+        "id": "22222222-0000-0000-0000-000000000001",
+        "username": "ajones",
+        "firstName": "Alice",
+        "lastName": "Jones",
+        "email": "alice@example.com",
+        "emailVerified": true,
+        "enabled": true,
+        "totp": false,
+        "disableableCredentialTypes": [],
+        "requiredActions": [],
+        "notBefore": 0
+    },
+    {
+        "id": "22222222-0000-0000-0000-000000000002",
+        "username": "bsmith",
+        "firstName": "Bob",
+        "lastName": "Smith",
+        "email": "bob@example.com",
+        "emailVerified": true,
+        "enabled": true,
+        "totp": false,
+        "disableableCredentialTypes": [],
+        "requiredActions": [],
+        "notBefore": 0
+    }
+]

@@ -1,0 +1,15 @@
+[
+    {
+        "id": "22222222-0000-0000-0000-000000000007",
+        "username": "disableduser",
+        "firstName": "Disa",
+        "lastName": "Bled",
+        "email": "disabled@example.com",
+        "emailVerified": true,
+        "enabled": false,
+        "totp": false,
+        "disableableCredentialTypes": [],
+        "requiredActions": [],
+        "notBefore": 0
+    }
+]

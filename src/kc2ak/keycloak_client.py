@@ -92,12 +92,33 @@ class KeycloakClient:
 
     def get_users(self, realm: str, *, page_size: int = 100) -> Iterator[dict[str, Any]]:
         """Paginate GET /admin/realms/{realm}/users via first/max."""
+        yield from self._paginate(f"/admin/realms/{realm}/users", page_size=page_size)
+
+    def get_groups(self, realm: str, *, page_size: int = 100) -> Iterator[dict[str, Any]]:
+        """Paginate GET /admin/realms/{realm}/groups via first/max.
+
+        Nested subgroups are not returned by this endpoint (confirmed
+        against a live Keycloak 25 instance) -- only their parent's
+        `subGroupCount` hints at their existence. See
+        mappers/groups.py:is_nested.
+        """
+        yield from self._paginate(f"/admin/realms/{realm}/groups", page_size=page_size)
+
+    def get_group_members(
+        self, realm: str, group_id: str, *, page_size: int = 100
+    ) -> Iterator[dict[str, Any]]:
+        """Paginate GET /admin/realms/{realm}/groups/{id}/members via first/max."""
+        yield from self._paginate(
+            f"/admin/realms/{realm}/groups/{group_id}/members", page_size=page_size
+        )
+
+    def _paginate(self, path: str, *, page_size: int) -> Iterator[dict[str, Any]]:
         first = 0
         while True:
             response = request_with_retry(
                 self._client,
                 "GET",
-                f"/admin/realms/{realm}/users",
+                path,
                 params={"first": first, "max": page_size},
                 headers=self._auth_headers(),
             )

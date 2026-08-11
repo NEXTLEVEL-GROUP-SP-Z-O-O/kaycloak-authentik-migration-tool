@@ -20,6 +20,15 @@ from kc2ak.authentik_client import AuthentikClient
 from kc2ak.config import Config
 from kc2ak.errors import PreconditionError, UsageError
 from kc2ak.keycloak_client import KeycloakClient
+from kc2ak.migrator import (
+    CONFLICT,
+    CREATED,
+    SKIPPED,
+    EntityResult,
+    migrate_groups,
+    migrate_memberships,
+    migrate_users,
+)
 from kc2ak.preconditions import check_preconditions
 from kc2ak.redact import redact
 
@@ -41,6 +50,13 @@ def _main() -> None:
     """kc2ak — migrate one Keycloak realm into Authentik."""
     # Present so typer keeps `migrate` as a named subcommand (per the CLI
     # contract) instead of collapsing the single command to the top level.
+
+
+def _count_line(entity: str, results: list[EntityResult]) -> str:
+    created = sum(1 for r in results if r.outcome == CREATED)
+    skipped = sum(1 for r in results if r.outcome == SKIPPED)
+    conflict = sum(1 for r in results if r.outcome == CONFLICT)
+    return f"{entity:<12} {created} create, {skipped} skip, {conflict} conflict"
 
 
 def _parse_only(value: str | None) -> tuple[str, ...]:
@@ -131,11 +147,60 @@ def migrate(
             typer.echo(f"error: {redact(str(exc))}", err=True)
             raise typer.Exit(code=2) from None
 
-        # Preconditions passed. The read/map/diff/write loop is task-2
-        # onward, so every entity type in scope reports zero for now.
-        for entity in _ALL_ENTITY_TYPES:
-            if entity in scope:
-                typer.echo(f"{entity:<12} 0 create,   0 skip,  0 conflict")
+        # Preconditions passed. groups/users/memberships now actually
+        # migrate, in the fixed order the goal requires; clients (providers,
+        # applications, protocol mappers) are task-5, so that line still
+        # reports zero. The full stdout contract (exact formatting, exit
+        # codes, recovery mail count) is task-3's job — this only has to be
+        # truthful about what ran.
+        need_groups = "groups" in scope or "memberships" in scope
+        need_users = "users" in scope or "memberships" in scope
+        # A group/user pass run only to support memberships (not itself in
+        # --only) must never write -- --only memberships means "match
+        # against what an earlier run already created," not "create groups
+        # and users I explicitly scoped out."
+        groups_apply = apply and "groups" in scope
+        users_apply = apply and "users" in scope
+
+        group_results: list[EntityResult] = []
+        user_results: list[EntityResult] = []
+        membership_results: list[EntityResult] = []
+        ok_groups: dict[str, str] = {}
+        group_pks: dict[str, str] = {}
+        group_members: dict[str, set[int]] = {}
+        user_pks: dict[str, int] = {}
+        resolved_usernames: set[str] = set()
+
+        if need_groups:
+            group_results, ok_groups, group_pks, group_members = migrate_groups(
+                kc_client, ak_client, realm, apply=groups_apply
+            )
+        if need_users:
+            user_results, user_pks, resolved_usernames = migrate_users(
+                kc_client, ak_client, realm, apply=users_apply
+            )
+        if "memberships" in scope:
+            membership_results = migrate_memberships(
+                kc_client,
+                ak_client,
+                realm,
+                apply=apply,
+                ok_groups=ok_groups,
+                group_pks=group_pks,
+                group_members=group_members,
+                user_pks=user_pks,
+                resolved_usernames=resolved_usernames,
+            )
+
+        if "groups" in scope:
+            typer.echo(_count_line("groups", group_results))
+        if "users" in scope:
+            typer.echo(_count_line("users", user_results))
+        if "memberships" in scope:
+            typer.echo(_count_line("memberships", membership_results))
+        if "clients" in scope:
+            typer.echo(_count_line("clients", []))
+
         typer.echo("recovery mail would be sent to 0 users (0 lack an email address)")
         if not apply:
             typer.echo("dry run — nothing written. re-run with --apply")

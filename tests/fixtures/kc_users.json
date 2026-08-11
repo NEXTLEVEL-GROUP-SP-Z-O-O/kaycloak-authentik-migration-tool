@@ -1,0 +1,141 @@
+[
+    {
+        "id": "22222222-0000-0000-0000-000000000001",
+        "username": "ajones",
+        "firstName": "Alice",
+        "lastName": "Jones",
+        "email": "alice@example.com",
+        "emailVerified": true,
+        "enabled": true,
+        "totp": false,
+        "disableableCredentialTypes": [],
+        "requiredActions": [],
+        "notBefore": 0,
+        "access": {
+            "manageGroupMembership": true,
+            "view": true,
+            "mapRoles": true,
+            "impersonate": true,
+            "manage": true
+        }
+    },
+    {
+        "id": "22222222-0000-0000-0000-000000000002",
+        "username": "bsmith",
+        "firstName": "Bob",
+        "lastName": "Smith",
+        "email": "bob@example.com",
+        "emailVerified": true,
+        "enabled": true,
+        "totp": false,
+        "disableableCredentialTypes": [],
+        "requiredActions": [],
+        "notBefore": 0,
+        "access": {
+            "manageGroupMembership": true,
+            "view": true,
+            "mapRoles": true,
+            "impersonate": true,
+            "manage": true
+        }
+    },
+    {
+        "id": "22222222-0000-0000-0000-000000000003",
+        "username": "cbaker",
+        "firstName": "Carol",
+        "lastName": "Baker",
+        "email": "carol@example.com",
+        "emailVerified": true,
+        "enabled": true,
+        "totp": false,
+        "disableableCredentialTypes": [],
+        "requiredActions": [],
+        "notBefore": 0,
+        "access": {
+            "manageGroupMembership": true,
+            "view": true,
+            "mapRoles": true,
+            "impersonate": true,
+            "manage": true
+        }
+    },
+    {
+        "id": "22222222-0000-0000-0000-000000000007",
+        "username": "disableduser",
+        "firstName": "Disa",
+        "lastName": "Bled",
+        "email": "disabled@example.com",
+        "emailVerified": true,
+        "enabled": false,
+        "totp": false,
+        "disableableCredentialTypes": [],
+        "requiredActions": [],
+        "notBefore": 0,
+        "access": {
+            "manageGroupMembership": true,
+            "view": true,
+            "mapRoles": true,
+            "impersonate": true,
+            "manage": true
+        }
+    },
+    {
+        "id": "22222222-0000-0000-0000-000000000005",
+        "username": "euser1",
+        "firstName": "Eve",
+        "lastName": "One",
+        "email": "shared@example.com",
+        "emailVerified": true,
+        "enabled": true,
+        "totp": false,
+        "disableableCredentialTypes": [],
+        "requiredActions": [],
+        "notBefore": 0,
+        "access": {
+            "manageGroupMembership": true,
+            "view": true,
+            "mapRoles": true,
+            "impersonate": true,
+            "manage": true
+        }
+    },
+    {
+        "id": "22222222-0000-0000-0000-000000000006",
+        "username": "euser2",
+        "firstName": "Eve",
+        "lastName": "Two",
+        "email": "shared@example.com",
+        "emailVerified": true,
+        "enabled": true,
+        "totp": false,
+        "disableableCredentialTypes": [],
+        "requiredActions": [],
+        "notBefore": 0,
+        "access": {
+            "manageGroupMembership": true,
+            "view": true,
+            "mapRoles": true,
+            "impersonate": true,
+            "manage": true
+        }
+    },
+    {
+        "id": "22222222-0000-0000-0000-000000000004",
+        "username": "noemail",
+        "firstName": "No",
+        "lastName": "Email",
+        "emailVerified": false,
+        "enabled": true,
+        "totp": false,
+        "disableableCredentialTypes": [],
+        "requiredActions": [],
+        "notBefore": 0,
+        "access": {
+            "manageGroupMembership": true,
+            "view": true,
+            "mapRoles": true,
+            "impersonate": true,
+            "manage": true
+        }
+    }
+]
