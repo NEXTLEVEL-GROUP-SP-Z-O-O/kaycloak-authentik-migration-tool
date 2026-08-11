@@ -38,25 +38,58 @@ BUILTIN_CLIENT_IDS = frozenset(
 # not true.
 _AUTHENTIK_DEFAULT_SCOPES = frozenset({"email", "openid", "profile"})
 
-# Expressions mirror authentik's own shipped managed mappings for these
-# scopes (confirmed live in task-5c against a fresh authentik 2024.10.5),
-# not invented content -- "openid" carries no claims by the OIDC spec
-# itself. Every one uses scope_name="openid" rather than the scope's own
-# name: task-5c confirmed live that a Keycloak *default* client scope's
-# claims are present unconditionally, regardless of what the token request
-# asks for, while an authentik ScopeMapping only fires when its own
-# scope_name is in the request. "openid" is the only scope_name guaranteed
-# present on every OIDC request, so it is the one choice that reproduces
-# Keycloak's actual behaviour instead of silently dropping these claims
-# whenever a client happens to request a narrower scope than usual.
+# Every one uses scope_name="openid" rather than the scope's own name:
+# task-5c confirmed live that a Keycloak *default* client scope's claims are
+# present unconditionally, regardless of what the token request asks for,
+# while an authentik ScopeMapping only fires when its own scope_name is in
+# the request. "openid" is the only scope_name guaranteed present on every
+# OIDC request, so it is the one choice that reproduces Keycloak's actual
+# behaviour instead of silently dropping these claims whenever a client
+# happens to request a narrower scope than usual.
+#
+# Content is deliberately narrower than authentik's own shipped managed
+# mappings (task-5d, correcting task-5c): only a claim reproducible
+# *faithfully* from migrated data is emitted, same rule the protocol mapper
+# whitelist follows. "openid" carries no claims by the OIDC spec itself.
+# "profile" omits authentik's own `given_name`/`family_name`/`nickname` --
+# Keycloak's firstName/lastName collapse into authentik's single `name`
+# field, so the parts are not separable, and authentik's own `nickname` is
+# just a second copy of username under another key, not migrated data of
+# its own. It also omits `groups`: confirmed live in task-5c that authentik
+# concatenates same-key list values across mappings rather than
+# overwriting, so a client with its own translated
+# oidc-group-membership-mapper would receive every group listed twice;
+# group membership belongs to that mapper alone, and dropping it here loses
+# nothing (it was never data unique to the profile scope). "email" omits
+# `email_verified` -- authentik does not track email verification, so a
+# copy would hardcode `true` for every migrated user regardless of their
+# real Keycloak `emailVerified` state, and relying parties treat that claim
+# as a security assertion.
 _STANDARD_SCOPE_EXPRESSIONS = {
     "openid": "return {}",
+    "profile": "return {'name': user.name, 'preferred_username': user.username}",
+    "email": "return {'email': user.email}",
+}
+
+# Standard claims dropped from the copies above because they cannot be
+# reproduced faithfully -- recorded in `unmapped` when their scope is
+# actually attached, per .chief/milestone-1/_contract/03-entity-mapping.md's
+# "What the copies may contain". `groups` is deliberately not here: it is
+# not lost data (Keycloak's own `profile` scope never included it), just an
+# authentik-default addition dropped to avoid the duplication bug above, so
+# nothing needs recording.
+_DROPPED_STANDARD_CLAIMS = {
     "profile": (
-        "return {'name': user.name, 'given_name': user.name, "
-        "'preferred_username': user.username, 'nickname': user.username, "
-        "'groups': [g.name for g in user.ak_groups.all()]}"
+        ("given_name", "Keycloak firstName/lastName collapse into authentik's single name field"),
+        ("family_name", "Keycloak firstName/lastName collapse into authentik's single name field"),
     ),
-    "email": "return {'email': user.email, 'email_verified': True}",
+    "email": (
+        (
+            "email_verified",
+            "authentik does not track email verification; hardcoding true would "
+            "misrepresent an unverified address as verified",
+        ),
+    ),
 }
 
 # Per-client token lifespan overrides live in Keycloak's free-form
@@ -135,23 +168,33 @@ def map_application(client_id: str, provider_pk: int, name: str | None = None) -
     }
 
 
-def standard_scope_mappings(kc_client: dict[str, Any], client_id: str) -> list[dict[str, Any]]:
-    """ScopeMapping create payloads for authentik's standard openid/profile/
-    email claims, gated on the source client
-    (.chief/milestone-1/_contract/03-entity-mapping.md's "Standard scopes on
-    a created provider"). `openid` is always included; `profile`/`email`
-    only when the Keycloak client declares them in `defaultClientScopes` or
-    `optionalClientScopes` -- attaching them unconditionally would widen a
-    token for a client whose admin deliberately removed one, which is as
-    silent a change as dropping claims and the harder one to notice. A scope
-    in neither list is faithfully reproduced by attaching nothing, so it is
-    never reported in `unmapped`.
+def standard_scope_mappings(
+    kc_client: dict[str, Any], client_id: str
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Returns (ScopeMapping create payloads, unmapped entries) for
+    authentik's standard openid/profile/email claims, gated on the source
+    client (.chief/milestone-1/_contract/03-entity-mapping.md's "Standard
+    scopes on a created provider"). `openid` is always included;
+    `profile`/`email` only when the Keycloak client declares them in
+    `defaultClientScopes` or `optionalClientScopes` -- attaching them
+    unconditionally would widen a token for a client whose admin
+    deliberately removed one, which is as silent a change as dropping
+    claims and the harder one to notice. A scope in neither list is
+    faithfully reproduced by attaching nothing, so it is never reported in
+    `unmapped` -- unlike the claims _DROPPED_STANDARD_CLAIMS names, which
+    are only omitted because this tool cannot reproduce them faithfully and
+    so are reported, same as an unwhitelisted protocol mapper. Every
+    surviving scope's expression is non-empty by construction (`openid`'s
+    is deliberately `{}`), so there is currently no case where a scope
+    would need skipping entirely -- if a future edit ever drops every claim
+    from `profile` or `email`, that scope must stop being attached rather
+    than creating an empty mapping.
     """
     declared = set(kc_client.get("defaultClientScopes") or []) | set(
         kc_client.get("optionalClientScopes") or []
     )
     scopes = ["openid", *(s for s in ("profile", "email") if s in declared)]
-    return [
+    payloads = [
         {
             "name": f"kc2ak: {client_id} / standard-{scope}",
             "scope_name": "openid",
@@ -160,6 +203,12 @@ def standard_scope_mappings(kc_client: dict[str, Any], client_id: str) -> list[d
         }
         for scope in scopes
     ]
+    unmapped = [
+        {"type": "standard_scope_claim", "name": claim_name, "why": why}
+        for scope in scopes
+        for claim_name, why in _DROPPED_STANDARD_CLAIMS.get(scope, ())
+    ]
+    return payloads, unmapped
 
 
 def unmapped_client_fields(kc_client: dict[str, Any]) -> list[dict[str, str]]:

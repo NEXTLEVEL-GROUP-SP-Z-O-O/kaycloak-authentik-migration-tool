@@ -288,6 +288,29 @@ def test_migrate_clients_creates_and_attaches_scope_mappings_under_apply() -> No
     assert unmapped_types == {"oidc-usermodel-realm-role-mapper"}
 
 
+def test_migrate_clients_groups_claim_appears_in_exactly_one_created_mapping() -> None:
+    # task-5d regression pin: confidential-app has both a translated
+    # oidc-group-membership-mapper (whitelist) and "profile" in its
+    # defaultClientScopes. Before task-5d, the standard-profile copy also
+    # emitted "groups", and authentik concatenates same-key list values
+    # across mappings rather than overwriting, so the group would have been
+    # listed twice in the issued token. Exactly one created ScopeMapping may
+    # reference the groups claim.
+    fake = FakeAuthentikClients()
+    kc_client = _confidential_app_client()
+    _run(fake, [kc_client], apply=True, secrets={kc_client["id"]: "kc2ak-test-client-secret"})
+
+    groups_mappings = [m for m in fake.scope_mappings.values() if "'groups'" in m["expression"]]
+    assert len(groups_mappings) == 1
+    assert groups_mappings[0]["name"] == "kc2ak: confidential-app / groups"
+    standard_profile = next(
+        m
+        for m in fake.scope_mappings.values()
+        if m["name"] == "kc2ak: confidential-app / standard-profile"
+    )
+    assert "groups" not in standard_profile["expression"]
+
+
 def test_migrate_clients_dry_run_reports_unmapped_mapper_without_creating_any() -> None:
     fake = FakeAuthentikClients()
     kc_client = _confidential_app_client()
@@ -416,7 +439,8 @@ def test_migrate_clients_interrupted_between_mapping_and_provider_create_converg
     from kc2ak.mappers.protocol_mappers import translate_client_protocol_mappers
 
     mapper_payloads, _unmapped = translate_client_protocol_mappers(kc_client, "confidential-app")
-    all_payloads = standard_scope_mappings(kc_client, "confidential-app") + mapper_payloads
+    standard_payloads, _standard_unmapped = standard_scope_mappings(kc_client, "confidential-app")
+    all_payloads = standard_payloads + mapper_payloads
     for payload in all_payloads:
         fake._scope_mapping_seq += 1
         pk = f"mapping-{fake._scope_mapping_seq}"

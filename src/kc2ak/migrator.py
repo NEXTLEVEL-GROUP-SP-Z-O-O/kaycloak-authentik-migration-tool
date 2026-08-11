@@ -401,7 +401,8 @@ def migrate_clients(
         slug = slugify(client_id)
         is_public = kc_client.get("publicClient", False)
         mapper_payloads, mapper_unmapped = translate_client_protocol_mappers(kc_client, client_id)
-        unmapped = unmapped_client_fields(kc_client) + mapper_unmapped
+        standard_payloads, standard_unmapped = standard_scope_mappings(kc_client, client_id)
+        unmapped = unmapped_client_fields(kc_client) + mapper_unmapped + standard_unmapped
 
         try:
             secret = None if is_public else kc.get_client_secret(realm, kc_id)
@@ -473,10 +474,7 @@ def migrate_clients(
                 )
                 continue
 
-            all_mapper_payloads = [
-                *standard_scope_mappings(kc_client, client_id),
-                *mapper_payloads,
-            ]
+            all_mapper_payloads = [*standard_payloads, *mapper_payloads]
             mapper_pks: list[str] = []
             mapper_create_failed = False
             for mapper_payload in all_mapper_payloads:

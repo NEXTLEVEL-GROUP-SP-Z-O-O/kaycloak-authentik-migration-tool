@@ -210,20 +210,21 @@ def test_unmapped_flags_token_lifespan_attributes() -> None:
     assert any(e["name"] == "token_lifespans" for e in entries)
 
 
-# --- standard_scope_mappings (task-5c) ---------------------------------------
+# --- standard_scope_mappings (task-5c/5d) ------------------------------------
 
 
 def test_standard_scope_mappings_openid_only_always_present() -> None:
     kc_client = {"clientId": "no-scopes", "defaultClientScopes": [], "optionalClientScopes": []}
-    payloads = standard_scope_mappings(kc_client, "no-scopes")
+    payloads, unmapped = standard_scope_mappings(kc_client, "no-scopes")
     assert [p["name"] for p in payloads] == ["kc2ak: no-scopes / standard-openid"]
     assert payloads[0]["scope_name"] == "openid"
     assert payloads[0]["expression"] == "return {}"
+    assert unmapped == []
 
 
 def test_standard_scope_mappings_gated_on_default_client_scopes() -> None:
     kc_client = _clients()["confidential-app"]
-    payloads = standard_scope_mappings(kc_client, "confidential-app")
+    payloads, unmapped = standard_scope_mappings(kc_client, "confidential-app")
     names = {p["name"] for p in payloads}
     # confidential-app's fixture declares "profile" and "email" in
     # defaultClientScopes -- both must be attached alongside openid.
@@ -233,6 +234,11 @@ def test_standard_scope_mappings_gated_on_default_client_scopes() -> None:
         "kc2ak: confidential-app / standard-email",
     }
     assert all(p["scope_name"] == "openid" for p in payloads)
+    # task-5d: only claims reproducible faithfully from migrated data
+    # survive in the copies; the rest are recorded, not approximated.
+    unmapped_names = {e["name"] for e in unmapped}
+    assert unmapped_names == {"given_name", "family_name", "email_verified"}
+    assert all(e["type"] == "standard_scope_claim" for e in unmapped)
 
 
 def test_standard_scope_mappings_gated_on_optional_client_scopes_too() -> None:
@@ -241,12 +247,13 @@ def test_standard_scope_mappings_gated_on_optional_client_scopes_too() -> None:
         "defaultClientScopes": [],
         "optionalClientScopes": ["email"],
     }
-    payloads = standard_scope_mappings(kc_client, "opt-scope-app")
+    payloads, unmapped = standard_scope_mappings(kc_client, "opt-scope-app")
     names = {p["name"] for p in payloads}
     assert names == {
         "kc2ak: opt-scope-app / standard-openid",
         "kc2ak: opt-scope-app / standard-email",
     }
+    assert {e["name"] for e in unmapped} == {"email_verified"}
 
 
 def test_standard_scope_mappings_absent_scope_is_not_attached() -> None:
@@ -258,13 +265,46 @@ def test_standard_scope_mappings_absent_scope_is_not_attached() -> None:
         "defaultClientScopes": ["profile"],
         "optionalClientScopes": [],
     }
-    payloads = standard_scope_mappings(kc_client, "profile-only")
+    payloads, unmapped = standard_scope_mappings(kc_client, "profile-only")
     names = {p["name"] for p in payloads}
     assert "kc2ak: profile-only / standard-email" not in names
     assert "kc2ak: profile-only / standard-profile" in names
+    # email's dropped claim (email_verified) must not appear -- the email
+    # scope was never attached at all for this client.
+    assert {e["name"] for e in unmapped} == {"given_name", "family_name"}
 
 
 def test_standard_scope_mappings_missing_scope_lists_still_attaches_openid() -> None:
     kc_client = {"clientId": "bare"}
-    payloads = standard_scope_mappings(kc_client, "bare")
+    payloads, unmapped = standard_scope_mappings(kc_client, "bare")
     assert [p["name"] for p in payloads] == ["kc2ak: bare / standard-openid"]
+    assert unmapped == []
+
+
+# --- what the copies may contain (task-5d) -----------------------------------
+
+
+def test_standard_profile_copy_omits_groups_and_given_family_name() -> None:
+    kc_client = {"clientId": "app", "defaultClientScopes": ["profile"]}
+    payloads, unmapped = standard_scope_mappings(kc_client, "app")
+    profile = next(p for p in payloads if p["name"].endswith("standard-profile"))
+    assert "groups" not in profile["expression"]
+    assert "given_name" not in profile["expression"]
+    assert "family_name" not in profile["expression"]
+    assert (
+        profile["expression"] == "return {'name': user.name, 'preferred_username': user.username}"
+    )
+    # groups is silently dropped (not lost data -- see clients.py), unlike
+    # given_name/family_name which are reported.
+    unmapped_names = {e["name"] for e in unmapped}
+    assert "groups" not in unmapped_names
+    assert {"given_name", "family_name"} <= unmapped_names
+
+
+def test_standard_email_copy_omits_email_verified() -> None:
+    kc_client = {"clientId": "app", "defaultClientScopes": ["email"]}
+    payloads, unmapped = standard_scope_mappings(kc_client, "app")
+    email = next(p for p in payloads if p["name"].endswith("standard-email"))
+    assert "email_verified" not in email["expression"]
+    assert email["expression"] == "return {'email': user.email}"
+    assert {e["name"] for e in unmapped} == {"email_verified"}
