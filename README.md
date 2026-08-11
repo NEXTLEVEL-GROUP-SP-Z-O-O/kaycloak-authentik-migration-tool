@@ -4,8 +4,13 @@ A command-line tool that migrates users, groups, group memberships, and OAuth/OI
 clients from a [Keycloak](https://www.keycloak.org/) realm into
 [Authentik](https://goauthentik.io/).
 
-> **Status: planning.** Nothing is implemented yet. The design below is settled;
-> the commands in [Usage](#usage) are the intended interface, not a working one.
+> **Status: implemented, pending final acceptance.** Users, groups, memberships,
+> clients, protocol mappers, reporting, and recovery mail all work and are covered
+> by 171 tests. Each piece has been verified against live Keycloak and Authentik
+> instances — including a real OIDC flow through a migrated client on its original
+> `clientId` and secret. The one check still outstanding is a single `kc2ak
+> migrate` run against both services simultaneously, which the development host
+> cannot currently hold in memory (see [Resource note](#resource-note)).
 
 ## What it does
 
@@ -57,9 +62,13 @@ reported as an error, not silently flattened.
 
 **Nothing about tokens is guessed.** Keycloak protocol mappers are translated to
 Authentik property mappings only for an explicit whitelist of mapper types. An
-unrecognised mapper does not block the provider — it is recorded as a conflict
-for a human to decide, because a wrongly translated mapper changes token contents
-in a way that only surfaces in production.
+unrecognised mapper does not block the provider and is *not* a conflict — the
+provider is still created, and `CONFLICT` is reserved for entities where nothing
+was written. Instead the mapper is listed in the report's `unmapped`, and any
+unmapped mapper anywhere in the run forces exit `1`, so a migration that quietly
+dropped part of a token's contents can never exit green. A wrongly translated
+mapper changes token contents in a way that only surfaces in production, so the
+tool reports it for a human rather than approximating it.
 
 Client secrets *are* carried over, so existing client applications keep working
 with nothing more than an issuer URL change.
