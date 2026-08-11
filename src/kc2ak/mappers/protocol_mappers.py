@@ -41,6 +41,36 @@ contract text alone:
   live: two ScopeMappings sharing a `scope_name` both fire and their
   claims merge without collision, so this is safe even alongside
   authentik's own default mappings.
+
+The `oidc-audience-mapper` translation is not inert: confirmed live with a
+mapping returning an `aud` value *different* from the client's own
+`client_id` (the realistic case -- a Keycloak audience mapper pointing at a
+separate backend API) that the mapping's value replaces authentik's
+standard `aud` claim in the issued id_token, rather than being ignored or
+merged alongside it. This matters because the whitelisted fixture example
+happens to set `included.client.audience` equal to the client's own
+`client_id`, which would have looked identical whether or not the mapping
+fired at all.
+
+Not carried over by this module, and not currently attached by
+migrate_clients either: authentik's own default OAuth scope mappings
+(the ones behind `openid`/`profile`/`email` in a hand-created provider,
+e.g. `preferred_username`/`name`/`email`/`groups`). Confirmed live that
+creating an OAuth2Provider via the API does not auto-attach them --
+`property_mappings` is exactly what the caller passes, nothing more.
+mappers/clients.py's `unmapped_client_fields` treats a Keycloak
+`defaultClientScopes` entry matching authentik's default scope names
+(`_AUTHENTIK_DEFAULT_SCOPES`) as not lost data, on the premise that
+authentik's equivalent is already present -- true for realm scope-level
+claims in Keycloak (which this tool doesn't read at all, out of scope
+everywhere), but for a client whose `preferred_username`/`email`/`name`
+claims came from Keycloak's *realm default client scopes* rather than
+client-level protocol mappers, nothing in this tool's read set or its
+`unmapped` reporting captures that gap -- a migrated provider can silently
+lose those claims with nothing in the report to say so. This is a
+milestone-level design question (whether migrate_clients should also
+attach authentik's own default mappings), not something this module
+decides on its own; flagged for the chief, not resolved here.
 """
 
 from __future__ import annotations
