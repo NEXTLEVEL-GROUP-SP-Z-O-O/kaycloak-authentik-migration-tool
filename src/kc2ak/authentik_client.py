@@ -85,6 +85,12 @@ class AuthentikClient:
         """
         return request_with_retry(self._client, "POST", "/api/v3/core/users/", json=payload)
 
+    def update_user(self, pk: int, payload: dict[str, Any]) -> httpx.Response:
+        """PATCH /api/v3/core/users/{pk}/, only reached under --update-existing.
+        Raw response, same convention as create_user.
+        """
+        return request_with_retry(self._client, "PATCH", f"/api/v3/core/users/{pk}/", json=payload)
+
     def find_group_by_name(self, name: str) -> dict[str, Any] | None:
         """Exact-match lookup on the group natural key (`name`). The result
         includes a `users` field (member pks), confirmed against a live
@@ -103,6 +109,12 @@ class AuthentikClient:
         create_user.
         """
         return request_with_retry(self._client, "POST", "/api/v3/core/groups/", json=payload)
+
+    def update_group(self, pk: str, payload: dict[str, Any]) -> httpx.Response:
+        """PATCH /api/v3/core/groups/{pk}/, only reached under --update-existing.
+        Raw response, same convention as create_group.
+        """
+        return request_with_retry(self._client, "PATCH", f"/api/v3/core/groups/{pk}/", json=payload)
 
     def add_user_to_group(self, group_pk: str, user_pk: int) -> httpx.Response:
         """POST /api/v3/core/groups/{pk}/add_user/ with the integer user pk

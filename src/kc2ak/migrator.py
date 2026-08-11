@@ -22,6 +22,7 @@ from kc2ak.mappers.users import map_user
 
 CREATED = "CREATED"
 SKIPPED = "SKIPPED"
+UPDATED = "UPDATED"
 CONFLICT = "CONFLICT"
 FAILED = "FAILED"
 
@@ -43,10 +44,21 @@ class EntityResult:
     outcome: str
     reason: str | None = None
     unmapped: list[dict[str, str]] = field(default_factory=list)
+    # Not part of the report schema -- internal-only, used by task-3's
+    # recovery-mail counting (a CREATED user's eligibility depends on
+    # whether they have an email and are active). The report serializer
+    # projects only the schema fields, so these never leak into the JSON.
+    email: str = ""
+    is_active: bool = True
 
 
 def migrate_groups(
-    kc: KeycloakClient, ak: AuthentikClient, realm: str, *, apply: bool
+    kc: KeycloakClient,
+    ak: AuthentikClient,
+    realm: str,
+    *,
+    apply: bool,
+    update_existing: bool = False,
 ) -> tuple[list[EntityResult], dict[str, str], dict[str, str], dict[str, set[int]]]:
     """Returns (results, ok_groups, group_pks, group_members).
 
@@ -83,7 +95,17 @@ def migrate_groups(
             if existing is not None:
                 group_pks[name] = existing["pk"]
                 group_members[name] = set(existing.get("users") or [])
-                results.append(EntityResult("group", kc_id, name, existing["pk"], SKIPPED))
+                if not update_existing:
+                    results.append(EntityResult("group", kc_id, name, existing["pk"], SKIPPED))
+                    continue
+                if not apply:
+                    results.append(EntityResult("group", kc_id, name, existing["pk"], UPDATED))
+                    continue
+                update_response = ak.update_group(existing["pk"], map_group(kc_group))
+                if update_response.status_code >= 400:
+                    results.append(EntityResult("group", kc_id, name, None, FAILED, API_REJECTED))
+                else:
+                    results.append(EntityResult("group", kc_id, name, existing["pk"], UPDATED))
                 continue
 
             if not apply:
@@ -105,7 +127,12 @@ def migrate_groups(
 
 
 def migrate_users(
-    kc: KeycloakClient, ak: AuthentikClient, realm: str, *, apply: bool
+    kc: KeycloakClient,
+    ak: AuthentikClient,
+    realm: str,
+    *,
+    apply: bool,
+    update_existing: bool = False,
 ) -> tuple[list[EntityResult], dict[str, int], set[str]]:
     """Returns (results, user_pks, resolved_usernames).
 
@@ -131,13 +158,57 @@ def migrate_users(
         mapped = map_user(kc_user)
         email = mapped["email"]
 
+        is_active = mapped["is_active"]
+
         try:
             existing = ak.find_user_by_username(username)
             if existing is not None:
                 if (existing.get("email") or "") == email:
                     user_pks[username] = existing["pk"]
                     resolved_usernames.add(username)
-                    results.append(EntityResult("user", kc_id, username, existing["pk"], SKIPPED))
+                    if not update_existing:
+                        results.append(
+                            EntityResult(
+                                "user",
+                                kc_id,
+                                username,
+                                existing["pk"],
+                                SKIPPED,
+                                email=email,
+                                is_active=is_active,
+                            )
+                        )
+                        continue
+                    if not apply:
+                        results.append(
+                            EntityResult(
+                                "user",
+                                kc_id,
+                                username,
+                                existing["pk"],
+                                UPDATED,
+                                email=email,
+                                is_active=is_active,
+                            )
+                        )
+                        continue
+                    update_response = ak.update_user(existing["pk"], mapped)
+                    if update_response.status_code >= 400:
+                        results.append(
+                            EntityResult("user", kc_id, username, None, FAILED, API_REJECTED)
+                        )
+                    else:
+                        results.append(
+                            EntityResult(
+                                "user",
+                                kc_id,
+                                username,
+                                existing["pk"],
+                                UPDATED,
+                                email=email,
+                                is_active=is_active,
+                            )
+                        )
                 else:
                     results.append(
                         EntityResult(
@@ -159,7 +230,18 @@ def migrate_users(
 
             if not apply:
                 resolved_usernames.add(username)
-                results.append(EntityResult("user", kc_id, username, None, CREATED, reason))
+                results.append(
+                    EntityResult(
+                        "user",
+                        kc_id,
+                        username,
+                        None,
+                        CREATED,
+                        reason,
+                        email=email,
+                        is_active=is_active,
+                    )
+                )
                 continue
 
             response = ak.create_user(mapped)
@@ -169,7 +251,18 @@ def migrate_users(
             created = response.json()
             user_pks[username] = created["pk"]
             resolved_usernames.add(username)
-            results.append(EntityResult("user", kc_id, username, created["pk"], CREATED, reason))
+            results.append(
+                EntityResult(
+                    "user",
+                    kc_id,
+                    username,
+                    created["pk"],
+                    CREATED,
+                    reason,
+                    email=email,
+                    is_active=is_active,
+                )
+            )
         except httpx.HTTPError:
             results.append(EntityResult("user", kc_id, username, None, FAILED, API_REJECTED))
 

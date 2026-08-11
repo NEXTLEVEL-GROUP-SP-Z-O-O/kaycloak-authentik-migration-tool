@@ -23,6 +23,7 @@ from kc2ak.migrator import (
     FAILED,
     NESTED_GROUPS_UNSUPPORTED,
     SKIPPED,
+    UPDATED,
     USERNAME_TAKEN_EMAIL_DIFFERS,
     migrate_groups,
     migrate_memberships,
@@ -87,6 +88,8 @@ class FakeAuthentik:
         self.add_user_calls = 0
         self.create_user_calls = 0
         self.create_group_calls = 0
+        self.update_user_calls = 0
+        self.update_group_calls = 0
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -138,6 +141,37 @@ class FakeAuthentik:
             }
             self.groups[body["name"]] = record
             return httpx.Response(201, json=record)
+
+        if path.startswith("/api/v3/core/users/") and method == "PATCH":
+            self.update_user_calls += 1
+            pk = int(path.removeprefix("/api/v3/core/users/").removesuffix("/"))
+            user = next((u for u in self.users.values() if u["pk"] == pk), None)
+            if user is None:
+                return httpx.Response(404, json={"detail": "not found"})
+            body = json.loads(request.content)
+            user.update(
+                {
+                    "email": body.get("email", user["email"]),
+                    "name": body.get("name", user["name"]),
+                    "is_active": body.get("is_active", user["is_active"]),
+                    "attributes": body.get("attributes", user["attributes"]),
+                }
+            )
+            return httpx.Response(200, json=user)
+
+        if (
+            path.startswith("/api/v3/core/groups/")
+            and method == "PATCH"
+            and not path.endswith("/add_user/")
+        ):
+            self.update_group_calls += 1
+            pk = path.removeprefix("/api/v3/core/groups/").removesuffix("/")
+            group = next((g for g in self.groups.values() if g["pk"] == pk), None)
+            if group is None:
+                return httpx.Response(404, json={"detail": "not found"})
+            body = json.loads(request.content)
+            group.update({"attributes": body.get("attributes", group["attributes"])})
+            return httpx.Response(200, json=group)
 
         if path.endswith("/add_user/") and method == "POST":
             self.add_user_calls += 1
@@ -553,3 +587,164 @@ def test_full_realm_migrates_end_to_end_and_rerun_creates_nothing() -> None:
     assert all(r.outcome in (SKIPPED, CONFLICT) for r in second_groups)
     assert all(r.outcome == SKIPPED for r in second_users)
     assert all(r.outcome == SKIPPED for r in second_memberships)
+
+
+# --- --update-existing -----------------------------------------------------
+
+
+def test_migrate_groups_without_update_existing_never_patches() -> None:
+    """Safety rule (_goal/02-safety-and-blast-radius.md): without the flag,
+    a matched object is only ever skipped, never modified.
+    """
+    fake = FakeAuthentik()
+    fake.groups["engineering"] = {
+        "pk": "existing-pk",
+        "name": "engineering",
+        "attributes": {},
+        "users": [],
+    }
+    kc = _kc_client(groups=[{"id": "g1", "name": "engineering", "subGroups": []}])
+
+    results, _, _, _ = migrate_groups(kc, _ak_client(fake), "kc2ak-test", apply=True)
+
+    assert results[0].outcome == SKIPPED
+    assert fake.update_group_calls == 0
+
+
+def test_migrate_groups_update_existing_patches_matched_group() -> None:
+    fake = FakeAuthentik()
+    fake.groups["engineering"] = {
+        "pk": "existing-pk",
+        "name": "engineering",
+        "attributes": {},
+        "users": [],
+    }
+    kc = _kc_client(groups=[{"id": "g1", "name": "engineering", "subGroups": []}])
+
+    results, _, group_pks, _ = migrate_groups(
+        kc, _ak_client(fake), "kc2ak-test", apply=True, update_existing=True
+    )
+
+    assert results[0].outcome == UPDATED
+    assert results[0].authentik_ref == "existing-pk"
+    assert group_pks["engineering"] == "existing-pk"
+    assert fake.update_group_calls == 1
+    assert fake.create_group_calls == 0
+
+
+def test_migrate_groups_update_existing_dry_run_plans_without_patching() -> None:
+    fake = FakeAuthentik()
+    fake.groups["engineering"] = {
+        "pk": "existing-pk",
+        "name": "engineering",
+        "attributes": {},
+        "users": [],
+    }
+    kc = _kc_client(groups=[{"id": "g1", "name": "engineering", "subGroups": []}])
+
+    results, _, _, _ = migrate_groups(
+        kc, _ak_client(fake), "kc2ak-test", apply=False, update_existing=True
+    )
+
+    assert results[0].outcome == UPDATED
+    assert fake.update_group_calls == 0
+
+
+def test_migrate_users_without_update_existing_never_patches() -> None:
+    fake = FakeAuthentik()
+    fake.users["ajones"] = {
+        "pk": 7,
+        "username": "ajones",
+        "email": "alice@example.com",
+        "name": "Alice Jones",
+        "is_active": True,
+        "attributes": {},
+    }
+    kc = _kc_client(
+        users=[
+            {
+                "id": "u1",
+                "username": "ajones",
+                "email": "alice@example.com",
+                "firstName": "Alice",
+                "lastName": "Jones",
+                "enabled": True,
+            }
+        ]
+    )
+
+    results, _, _ = migrate_users(kc, _ak_client(fake), "kc2ak-test", apply=True)
+
+    assert results[0].outcome == SKIPPED
+    assert fake.update_user_calls == 0
+
+
+def test_migrate_users_update_existing_patches_matched_user() -> None:
+    fake = FakeAuthentik()
+    fake.users["ajones"] = {
+        "pk": 7,
+        "username": "ajones",
+        "email": "alice@example.com",
+        "name": "Alice Jones",
+        "is_active": True,
+        "attributes": {},
+    }
+    kc = _kc_client(
+        users=[
+            {
+                "id": "u1",
+                "username": "ajones",
+                "email": "alice@example.com",
+                "firstName": "Alice",
+                "lastName": "Jonesova",
+                "enabled": True,
+            }
+        ]
+    )
+
+    results, user_pks, _ = migrate_users(
+        kc, _ak_client(fake), "kc2ak-test", apply=True, update_existing=True
+    )
+
+    assert results[0].outcome == UPDATED
+    assert results[0].authentik_ref == 7
+    assert user_pks["ajones"] == 7
+    assert fake.update_user_calls == 1
+    assert fake.create_user_calls == 0
+    assert fake.users["ajones"]["name"] == "Alice Jonesova"
+
+
+def test_migrate_users_update_existing_leaves_conflict_untouched() -> None:
+    """CONFLICT is a partial/ambiguous match, not a match -- update_existing
+    must not turn a username-taken-different-email conflict into a write.
+    """
+    fake = FakeAuthentik()
+    fake.users["ajones"] = {
+        "pk": 7,
+        "username": "ajones",
+        "email": "someone-else@example.com",
+        "name": "Alice Jones",
+        "is_active": True,
+        "attributes": {},
+    }
+    kc = _kc_client(
+        users=[
+            {
+                "id": "u1",
+                "username": "ajones",
+                "email": "alice@example.com",
+                "firstName": "Alice",
+                "lastName": "Jones",
+                "enabled": True,
+            }
+        ]
+    )
+
+    results, _, _ = migrate_users(
+        kc, _ak_client(fake), "kc2ak-test", apply=True, update_existing=True
+    )
+
+    assert results[0].outcome == CONFLICT
+    assert results[0].reason == USERNAME_TAKEN_EMAIL_DIFFERS
+    assert fake.update_user_calls == 0
+    assert fake.create_user_calls == 0

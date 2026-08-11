@@ -10,7 +10,9 @@ any client touches the network where possible.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 import typer
@@ -31,6 +33,8 @@ from kc2ak.migrator import (
 )
 from kc2ak.preconditions import check_preconditions
 from kc2ak.redact import redact
+from kc2ak.report import build_report, compute_recovery_mail, write_report
+from kc2ak.report import exit_code as report_exit_code
 
 # typer's own parsing errors (unknown option, missing argument, bad choice)
 # default to exit code 2, which collides with this contract's "aborted on a
@@ -52,11 +56,25 @@ def _main() -> None:
     # contract) instead of collapsing the single command to the top level.
 
 
+def _now_iso() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _count_line(entity: str, results: list[EntityResult]) -> str:
     created = sum(1 for r in results if r.outcome == CREATED)
     skipped = sum(1 for r in results if r.outcome == SKIPPED)
     conflict = sum(1 for r in results if r.outcome == CONFLICT)
-    return f"{entity:<12} {created} create, {skipped} skip, {conflict} conflict"
+    return f"{entity:<11}{created:>3} create, {skipped:>3} skip, {conflict:>2} conflict"
+
+
+def _recovery_line(recovery_mail: dict[str, Any]) -> str:
+    # Mandatory on every dry run, even when --send-recovery-email was never
+    # passed -- task-4 implements the actual mailing, this just counts and
+    # reports who would receive it.
+    return (
+        f"recovery mail would be sent to {recovery_mail['eligible']} users "
+        f"({recovery_mail['no_email_address']} lack an email address)"
+    )
 
 
 def _parse_only(value: str | None) -> tuple[str, ...]:
@@ -100,8 +118,6 @@ def migrate(
     ),
 ) -> None:
     """Migrate one Keycloak realm into Authentik."""
-    del update_existing, report  # not yet implemented; task-2/task-3 own these
-
     try:
         if not realm:
             raise UsageError("--realm is required")
@@ -147,12 +163,12 @@ def migrate(
             typer.echo(f"error: {redact(str(exc))}", err=True)
             raise typer.Exit(code=2) from None
 
+        started_at = _now_iso()
+
         # Preconditions passed. groups/users/memberships now actually
         # migrate, in the fixed order the goal requires; clients (providers,
         # applications, protocol mappers) are task-5, so that line still
-        # reports zero. The full stdout contract (exact formatting, exit
-        # codes, recovery mail count) is task-3's job — this only has to be
-        # truthful about what ran.
+        # reports zero.
         need_groups = "groups" in scope or "memberships" in scope
         need_users = "users" in scope or "memberships" in scope
         # A group/user pass run only to support memberships (not itself in
@@ -173,11 +189,11 @@ def migrate(
 
         if need_groups:
             group_results, ok_groups, group_pks, group_members = migrate_groups(
-                kc_client, ak_client, realm, apply=groups_apply
+                kc_client, ak_client, realm, apply=groups_apply, update_existing=update_existing
             )
         if need_users:
             user_results, user_pks, resolved_usernames = migrate_users(
-                kc_client, ak_client, realm, apply=users_apply
+                kc_client, ak_client, realm, apply=users_apply, update_existing=update_existing
             )
         if "memberships" in scope:
             membership_results = migrate_memberships(
@@ -201,9 +217,23 @@ def migrate(
         if "clients" in scope:
             typer.echo(_count_line("clients", []))
 
-        typer.echo("recovery mail would be sent to 0 users (0 lack an email address)")
+        recovery_mail = compute_recovery_mail(user_results)
+        typer.echo(_recovery_line(recovery_mail))
         if not apply:
             typer.echo("dry run — nothing written. re-run with --apply")
+
+        finished_at = _now_iso()
+        entities = [*group_results, *user_results, *membership_results]
+        report_data = build_report(
+            realm=realm,
+            applied=apply,
+            started_at=started_at,
+            finished_at=finished_at,
+            entities=entities,
+            recovery_mail=recovery_mail,
+        )
+        write_report(report, report_data)
+        raise typer.Exit(code=report_exit_code(entities))
     finally:
         kc_client.close()
         ak_client.close()

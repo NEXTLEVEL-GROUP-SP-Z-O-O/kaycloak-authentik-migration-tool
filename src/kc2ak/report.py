@@ -1,0 +1,118 @@
+"""Builds and writes the JSON report from
+.chief/milestone-1/_contract/02-report-schema.md, and derives the CLI exit
+code from the same entity list so the two can never disagree.
+
+Consumes migrator.py's in-memory EntityResult records; does not touch how
+they are produced.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from kc2ak.migrator import CONFLICT, CREATED, FAILED, EntityResult
+from kc2ak.redact import redact
+
+_KIND_TO_KEY = {
+    "group": "groups",
+    "user": "users",
+    "membership": "memberships",
+    "client": "clients",
+}
+_OUTCOME_TO_KEY = {
+    "CREATED": "created",
+    "SKIPPED": "skipped",
+    "UPDATED": "updated",
+    "CONFLICT": "conflict",
+    "FAILED": "failed",
+}
+
+
+def _build_counts(entities: list[EntityResult]) -> dict[str, dict[str, int]]:
+    counts = {
+        key: {"created": 0, "skipped": 0, "updated": 0, "conflict": 0, "failed": 0}
+        for key in _KIND_TO_KEY.values()
+    }
+    for entity in entities:
+        counts[_KIND_TO_KEY[entity.kind]][_OUTCOME_TO_KEY[entity.outcome]] += 1
+    total_counted = sum(sum(kind_counts.values()) for kind_counts in counts.values())
+    # Contract: "counts must reconcile against entities; a mismatch is a
+    # bug" -- assert it rather than hoping, per the task brief.
+    assert total_counted == len(entities), "report counts do not reconcile against entities"
+    return counts
+
+
+def compute_recovery_mail(user_results: list[EntityResult]) -> dict[str, Any]:
+    """Partitions this run's CREATED users into eligible / no-email /
+    inactive-excluded, per _goal/02-safety-and-blast-radius.md: only
+    users this run created can receive mail, disabled users are excluded
+    entirely, and users with no email address can't be mailed at all.
+    `requested`/`sent` stay at their task-4 defaults.
+    """
+    created = [r for r in user_results if r.kind == "user" and r.outcome == CREATED]
+    inactive_excluded = sum(1 for r in created if not r.is_active)
+    no_email_address = sum(1 for r in created if r.is_active and not r.email)
+    eligible = len(created) - inactive_excluded - no_email_address
+    return {
+        "requested": False,
+        "eligible": eligible,
+        "sent": 0,
+        "no_email_address": no_email_address,
+        "inactive_excluded": inactive_excluded,
+    }
+
+
+def build_report(
+    *,
+    realm: str,
+    applied: bool,
+    started_at: str,
+    finished_at: str,
+    entities: list[EntityResult],
+    recovery_mail: dict[str, Any],
+) -> dict[str, Any]:
+    """Assembles the full report dict. Every entity read from Keycloak must
+    appear exactly once in `entities` -- callers pass the concatenation of
+    every migrate_*() result list. `authentik_ref` is forced null on a dry
+    run: nothing was written, so no ref exists yet, even for a matched
+    (SKIPPED/UPDATED) entity whose ref is only known from a read.
+    """
+    return {
+        "version": 1,
+        "realm": realm,
+        "applied": applied,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "counts": _build_counts(entities),
+        "recovery_mail": recovery_mail,
+        "entities": [
+            {
+                "kind": e.kind,
+                "keycloak_id": e.keycloak_id,
+                "keycloak_ref": e.keycloak_ref,
+                "authentik_ref": e.authentik_ref if applied else None,
+                "outcome": e.outcome,
+                "reason": e.reason,
+                "unmapped": e.unmapped,
+            }
+            for e in entities
+        ],
+    }
+
+
+def exit_code(entities: list[EntityResult]) -> int:
+    """0 clean, 1 completed with findings -- conflicts, failures, or
+    anything left unmapped (.chief/milestone-1/_contract/01-cli-interface.md).
+    """
+    has_findings = any(e.outcome in (CONFLICT, FAILED) or e.unmapped for e in entities)
+    return 1 if has_findings else 0
+
+
+def write_report(path: Path, report: dict[str, Any]) -> None:
+    """No secrets anywhere in the report, including inside reason/unmapped
+    -- redact() is applied to the full serialised text as a structural
+    guarantee, not just to the fields expected to hold them.
+    """
+    path.write_text(redact(json.dumps(report, indent=2)) + "\n")
