@@ -44,21 +44,43 @@ def _build_counts(entities: list[EntityResult]) -> dict[str, dict[str, int]]:
     return counts
 
 
-def compute_recovery_mail(user_results: list[EntityResult]) -> dict[str, Any]:
+def eligible_for_recovery_mail(user_results: list[EntityResult]) -> list[EntityResult]:
+    """Users this run CREATED, active, with an email address --
+    _goal/02-safety-and-blast-radius.md's "who receives mail" rule: only an
+    outcome of CREATED has a fresh Authentik account to reset (SKIPPED/
+    UPDATED already had a way in, CONFLICT/FAILED have no account at all),
+    and inactive/no-email users are excluded from the mail pass entirely.
+
+    cli.py's send loop and compute_recovery_mail()'s eligible/sent counts
+    both derive from this one list, so a SKIPPED/UPDATED/CONFLICT/FAILED
+    user cannot be mailed by construction, not by convention.
+    """
+    return [
+        r
+        for r in user_results
+        if r.kind == "user" and r.outcome == CREATED and r.is_active and r.email
+    ]
+
+
+def compute_recovery_mail(
+    user_results: list[EntityResult], *, requested: bool = False, sent: int = 0
+) -> dict[str, Any]:
     """Partitions this run's CREATED users into eligible / no-email /
     inactive-excluded, per _goal/02-safety-and-blast-radius.md: only
     users this run created can receive mail, disabled users are excluded
     entirely, and users with no email address can't be mailed at all.
-    `requested`/`sent` stay at their task-4 defaults.
+    `requested`/`sent` default to task-3's placeholders for callers that
+    never send mail; cli.py passes the real values once it has actually run
+    (or skipped) the send pass.
     """
     created = [r for r in user_results if r.kind == "user" and r.outcome == CREATED]
     inactive_excluded = sum(1 for r in created if not r.is_active)
     no_email_address = sum(1 for r in created if r.is_active and not r.email)
-    eligible = len(created) - inactive_excluded - no_email_address
+    eligible = eligible_for_recovery_mail(user_results)
     return {
-        "requested": False,
-        "eligible": eligible,
-        "sent": 0,
+        "requested": requested,
+        "eligible": len(eligible),
+        "sent": sent,
         "no_email_address": no_email_address,
         "inactive_excluded": inactive_excluded,
     }

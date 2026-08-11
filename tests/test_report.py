@@ -9,8 +9,14 @@ import json
 from pathlib import Path
 
 from kc2ak import redact as redact_mod
-from kc2ak.migrator import CONFLICT, CREATED, FAILED, SKIPPED, EntityResult
-from kc2ak.report import build_report, compute_recovery_mail, exit_code, write_report
+from kc2ak.migrator import CONFLICT, CREATED, FAILED, SKIPPED, UPDATED, EntityResult
+from kc2ak.report import (
+    build_report,
+    compute_recovery_mail,
+    eligible_for_recovery_mail,
+    exit_code,
+    write_report,
+)
 
 
 def setup_function() -> None:
@@ -164,6 +170,52 @@ def test_compute_recovery_mail_partitions_created_users() -> None:
         "sent": 0,
         "no_email_address": 1,
         "inactive_excluded": 1,
+    }
+
+
+def test_eligible_for_recovery_mail_excludes_non_created_outcomes() -> None:
+    """_goal/02-safety-and-blast-radius.md's "who receives mail" rule: only
+    CREATED users this run made are ever mail candidates -- SKIPPED/UPDATED
+    already have a way in, CONFLICT/FAILED have no account to reset.
+    """
+    entities = [
+        EntityResult("user", "u1", "created", 1, CREATED, email="a@x.com", is_active=True),
+        EntityResult("user", "u2", "skipped", 2, SKIPPED, email="b@x.com", is_active=True),
+        EntityResult("user", "u3", "updated", 3, UPDATED, email="c@x.com", is_active=True),
+        EntityResult("user", "u4", "conflict", None, CONFLICT, email="d@x.com", is_active=True),
+        EntityResult("user", "u5", "failed", None, FAILED, email="e@x.com", is_active=True),
+        EntityResult("user", "u6", "no-email", 6, CREATED, email="", is_active=True),
+        EntityResult("user", "u7", "inactive", 7, CREATED, email="g@x.com", is_active=False),
+        EntityResult("group", "g1", "not-a-user", 1, CREATED),
+    ]
+    eligible = eligible_for_recovery_mail(entities)
+    assert [r.keycloak_ref for r in eligible] == ["created"]
+
+
+def test_compute_recovery_mail_requested_and_sent_are_wired_through() -> None:
+    entities = [
+        EntityResult("user", "u1", "a", 1, CREATED, email="a@x.com", is_active=True),
+    ]
+    recovery = compute_recovery_mail(entities, requested=True, sent=1)
+    assert recovery == {
+        "requested": True,
+        "eligible": 1,
+        "sent": 1,
+        "no_email_address": 0,
+        "inactive_excluded": 0,
+    }
+
+
+def test_compute_recovery_mail_defaults_match_task3_placeholders() -> None:
+    # Callers that never send mail (e.g. --send-recovery-email not passed)
+    # get the same requested=False/sent=0 shape task-3 hardcoded.
+    entities = [EntityResult("user", "u1", "a", 1, CREATED, email="a@x.com", is_active=True)]
+    assert compute_recovery_mail(entities) == {
+        "requested": False,
+        "eligible": 1,
+        "sent": 0,
+        "no_email_address": 0,
+        "inactive_excluded": 0,
     }
 
 

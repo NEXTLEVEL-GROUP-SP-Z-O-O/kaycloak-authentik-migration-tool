@@ -12,6 +12,8 @@ def _clients() -> tuple[MagicMock, MagicMock]:
     kc = MagicMock()
     ak = MagicMock()
     ak.flow_exists.return_value = True
+    ak.recovery_flow_configured.return_value = True
+    ak.get_email_stage.return_value = {"use_global_settings": True}
     return kc, ak
 
 
@@ -134,6 +136,88 @@ def test_send_recovery_email_without_email_stage_raises_precondition_error() -> 
 
 def test_send_recovery_email_with_email_stage_passes() -> None:
     kc, ak = _clients()
+
+    check_preconditions(
+        kc_client=kc,
+        ak_client=ak,
+        clients_in_scope=False,
+        authorization_flow=None,
+        invalidation_flow=None,
+        send_recovery_email=True,
+        email_stage="11111111-1111-1111-1111-111111111111",
+    )
+    ak.recovery_flow_configured.assert_called_once()
+    ak.get_email_stage.assert_called_once_with("11111111-1111-1111-1111-111111111111")
+
+
+def test_recovery_checks_not_made_when_send_recovery_email_false() -> None:
+    kc, ak = _clients()
+
+    check_preconditions(
+        kc_client=kc,
+        ak_client=ak,
+        clients_in_scope=False,
+        authorization_flow=None,
+        invalidation_flow=None,
+        send_recovery_email=False,
+        email_stage=None,
+    )
+    ak.recovery_flow_configured.assert_not_called()
+    ak.get_email_stage.assert_not_called()
+
+
+def test_no_recovery_flow_on_brand_raises_precondition_error() -> None:
+    kc, ak = _clients()
+    ak.recovery_flow_configured.return_value = False
+
+    with pytest.raises(PreconditionError, match="no recovery flow"):
+        check_preconditions(
+            kc_client=kc,
+            ak_client=ak,
+            clients_in_scope=False,
+            authorization_flow=None,
+            invalidation_flow=None,
+            send_recovery_email=True,
+            email_stage="11111111-1111-1111-1111-111111111111",
+        )
+    ak.get_email_stage.assert_not_called()
+
+
+def test_unknown_email_stage_raises_precondition_error() -> None:
+    kc, ak = _clients()
+    ak.get_email_stage.return_value = None
+
+    with pytest.raises(PreconditionError, match="does not exist"):
+        check_preconditions(
+            kc_client=kc,
+            ak_client=ak,
+            clients_in_scope=False,
+            authorization_flow=None,
+            invalidation_flow=None,
+            send_recovery_email=True,
+            email_stage="11111111-1111-1111-1111-111111111111",
+        )
+
+
+def test_email_stage_without_smtp_configuration_raises_precondition_error() -> None:
+    kc, ak = _clients()
+    ak.get_email_stage.return_value = {"use_global_settings": False, "host": ""}
+
+    with pytest.raises(PreconditionError, match="SMTP"):
+        check_preconditions(
+            kc_client=kc,
+            ak_client=ak,
+            clients_in_scope=False,
+            authorization_flow=None,
+            invalidation_flow=None,
+            send_recovery_email=True,
+            email_stage="11111111-1111-1111-1111-111111111111",
+        )
+
+
+def test_email_stage_with_stage_level_host_passes_smtp_check() -> None:
+    kc, ak = _clients()
+    ak.get_email_stage.return_value = {"use_global_settings": False, "host": "smtp.example.com"}
 
     check_preconditions(
         kc_client=kc,

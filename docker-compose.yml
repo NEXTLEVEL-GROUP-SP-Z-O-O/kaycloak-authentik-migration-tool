@@ -33,6 +33,20 @@ services:
       timeout: 5s
       retries: 20
 
+  # SMTP sink for task-4's recovery-mail verification: authentik's global
+  # email settings point at this container, and mail sent through it is
+  # readable via its own API/UI instead of a real inbox. Not needed for any
+  # other task -- only --send-recovery-email exercises Authentik's mail path.
+  mailpit:
+    image: axllent/mailpit:v1.20.3
+    ports:
+      - "8025:8025" # web UI / API
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8025/readyz"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   authentik-server:
     image: ghcr.io/goauthentik/server:2024.10.5
     command: server
@@ -46,6 +60,9 @@ services:
       AUTHENTIK_BOOTSTRAP_EMAIL: akadmin@example.com
       AUTHENTIK_BOOTSTRAP_PASSWORD: akadmin
       AUTHENTIK_BOOTSTRAP_TOKEN: ${AK_TOKEN:-kc2ak-local-bootstrap-token}
+      AUTHENTIK_EMAIL__HOST: mailpit
+      AUTHENTIK_EMAIL__PORT: 1025
+      AUTHENTIK_EMAIL__FROM: kc2ak@example.com
     ports:
       - "9000:9000"
     depends_on:

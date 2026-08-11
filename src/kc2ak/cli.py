@@ -34,7 +34,12 @@ from kc2ak.migrator import (
 )
 from kc2ak.preconditions import check_preconditions
 from kc2ak.redact import redact
-from kc2ak.report import build_report, compute_recovery_mail, write_report
+from kc2ak.report import (
+    build_report,
+    compute_recovery_mail,
+    eligible_for_recovery_mail,
+    write_report,
+)
 from kc2ak.report import exit_code as report_exit_code
 
 # typer's own parsing errors (unknown option, missing argument, bad choice)
@@ -224,7 +229,27 @@ def migrate(
         if "clients" in scope:
             typer.echo(_count_line("clients", [], update_existing=update_existing))
 
-        recovery_mail = compute_recovery_mail(user_results)
+        # Only reachable under --apply (usage error otherwise), so eligible
+        # CREATED users have a real Authentik pk -- except when --only
+        # excludes "users" while --apply is set, in which case the users
+        # pass ran dry-run-shaped to support memberships and never actually
+        # created anyone; skip those rather than mail a pk that doesn't exist.
+        sent = 0
+        if send_recovery_email:
+            assert email_stage is not None
+            for result in eligible_for_recovery_mail(user_results):
+                if not isinstance(result.authentik_ref, int):
+                    continue
+                try:
+                    mail_response = ak_client.send_recovery_email(result.authentik_ref, email_stage)
+                except httpx.HTTPError:
+                    continue
+                if mail_response.status_code == 204:
+                    sent += 1
+
+        recovery_mail = compute_recovery_mail(
+            user_results, requested=send_recovery_email, sent=sent
+        )
         typer.echo(_recovery_line(recovery_mail))
         if not apply:
             typer.echo("dry run — nothing written. re-run with --apply")

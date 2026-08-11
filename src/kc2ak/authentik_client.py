@@ -116,6 +116,51 @@ class AuthentikClient:
         """
         return request_with_retry(self._client, "PATCH", f"/api/v3/core/groups/{pk}/", json=payload)
 
+    def recovery_flow_configured(self) -> bool:
+        """True if the default brand has a recovery flow assigned.
+        _goal/02-safety-and-blast-radius.md precondition: --send-recovery-email
+        must abort up front if the brand has no recovery flow at all.
+        """
+        response = request_with_retry(self._client, "GET", "/api/v3/core/brands/")
+        response.raise_for_status()
+        results: list[dict[str, Any]] = response.json().get("results", [])
+        brand = next((b for b in results if b.get("default")), results[0] if results else None)
+        return bool(brand and brand.get("flow_recovery"))
+
+    def get_email_stage(self, stage_uuid: str) -> dict[str, Any] | None:
+        """GET /api/v3/stages/email/{uuid}/. None on 404 (unknown/malformed
+        UUID -- confirmed live, both come back 404, not a validation error).
+
+        Used for two of the three --send-recovery-email preconditions: the
+        stage's mere existence covers "the --email-stage UUID is present and
+        valid"; `use_global_settings` or a configured `host` is the closest
+        proxy authentik's API exposes for "SMTP is configured" -- there is no
+        endpoint that reports whether the configured SMTP actually works
+        (confirmed live: a 204 from recovery_email only means the send was
+        queued to the worker, not that delivery succeeded).
+        """
+        response = request_with_retry(self._client, "GET", f"/api/v3/stages/email/{stage_uuid}/")
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        result: dict[str, Any] = response.json()
+        return result
+
+    def send_recovery_email(self, user_pk: int, email_stage: str) -> httpx.Response:
+        """POST /api/v3/core/users/{id}/recovery_email/. `email_stage` is a
+        **query** parameter, not a JSON body field, despite
+        _contract/03-entity-mapping.md's example -- confirmed live against
+        authentik 2024.10.5: the body form 400s with "Email stage does not
+        exist" even for a real stage, the query form 204s. Raw response, same
+        convention as create_user/create_group.
+        """
+        return request_with_retry(
+            self._client,
+            "POST",
+            f"/api/v3/core/users/{user_pk}/recovery_email/",
+            params={"email_stage": email_stage},
+        )
+
     def add_user_to_group(self, group_pk: str, user_pk: int) -> httpx.Response:
         """POST /api/v3/core/groups/{pk}/add_user/ with the integer user pk
         (not the uuid). Confirmed idempotent against a live instance -- a
