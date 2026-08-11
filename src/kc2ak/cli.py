@@ -26,6 +26,7 @@ from kc2ak.migrator import (
     CONFLICT,
     CREATED,
     SKIPPED,
+    UPDATED,
     EntityResult,
     migrate_groups,
     migrate_memberships,
@@ -60,11 +61,15 @@ def _now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _count_line(entity: str, results: list[EntityResult]) -> str:
+def _count_line(entity: str, results: list[EntityResult], *, update_existing: bool = False) -> str:
     created = sum(1 for r in results if r.outcome == CREATED)
     skipped = sum(1 for r in results if r.outcome == SKIPPED)
     conflict = sum(1 for r in results if r.outcome == CONFLICT)
-    return f"{entity:<11}{created:>3} create, {skipped:>3} skip, {conflict:>2} conflict"
+    line = f"{entity:<11}{created:>3} create, {skipped:>3} skip, "
+    if update_existing:
+        updated = sum(1 for r in results if r.outcome == UPDATED)
+        line += f"{updated:>3} update, "
+    return line + f"{conflict:>2} conflict"
 
 
 def _recovery_line(recovery_mail: dict[str, Any]) -> str:
@@ -209,13 +214,15 @@ def migrate(
             )
 
         if "groups" in scope:
-            typer.echo(_count_line("groups", group_results))
+            typer.echo(_count_line("groups", group_results, update_existing=update_existing))
         if "users" in scope:
-            typer.echo(_count_line("users", user_results))
+            typer.echo(_count_line("users", user_results, update_existing=update_existing))
         if "memberships" in scope:
-            typer.echo(_count_line("memberships", membership_results))
+            typer.echo(
+                _count_line("memberships", membership_results, update_existing=update_existing)
+            )
         if "clients" in scope:
-            typer.echo(_count_line("clients", []))
+            typer.echo(_count_line("clients", [], update_existing=update_existing))
 
         recovery_mail = compute_recovery_mail(user_results)
         typer.echo(_recovery_line(recovery_mail))
