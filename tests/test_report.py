@@ -155,6 +155,82 @@ def test_exit_code_one_on_unmapped_alone() -> None:
     assert exit_code(entities) == 1
 
 
+def test_exit_code_zero_when_only_unmapped_is_standard_scope_claim() -> None:
+    """task-5e: standard_scope_claim drops are a universal property of
+    every migration (the same three claims on every client that declares
+    profile/email), not a per-realm finding -- gating on them would make
+    exit 0 unreachable forever. They stay in the report, not the exit code.
+    """
+    entities = [
+        EntityResult(
+            "client",
+            "c1",
+            "billing-api",
+            "billing-api",
+            CREATED,
+            None,
+            unmapped=[
+                {
+                    "type": "standard_scope_claim",
+                    "name": "email_verified",
+                    "why": "authentik does not track email verification",
+                },
+                {
+                    "type": "standard_scope_claim",
+                    "name": "given_name",
+                    "why": "not separable from authentik's single name field",
+                },
+            ],
+        )
+    ]
+    assert exit_code(entities) == 0
+
+
+def test_exit_code_one_when_standard_scope_claim_mixed_with_protocol_mapper() -> None:
+    """A mixed entity -- universal standard-claim drops alongside a genuine
+    per-realm unmapped protocol mapper -- must still exit 1.
+    """
+    entities = [
+        EntityResult(
+            "client",
+            "c1",
+            "billing-api",
+            "billing-api",
+            CREATED,
+            None,
+            unmapped=[
+                {
+                    "type": "standard_scope_claim",
+                    "name": "email_verified",
+                    "why": "authentik does not track email verification",
+                },
+                {
+                    "type": "protocol_mapper",
+                    "name": "cost-centre",
+                    "mapper_type": "oidc-script-based-protocol-mapper",
+                    "why": "mapper type not in whitelist",
+                },
+            ],
+        )
+    ]
+    assert exit_code(entities) == 1
+
+
+def test_exit_code_one_on_client_field_alone() -> None:
+    entities = [
+        EntityResult(
+            "client",
+            "c1",
+            "billing-api",
+            "billing-api",
+            CREATED,
+            None,
+            unmapped=[{"type": "client_field", "name": "webOrigins", "why": "not carried over"}],
+        )
+    ]
+    assert exit_code(entities) == 1
+
+
 def test_compute_recovery_mail_partitions_created_users() -> None:
     entities = [
         EntityResult("user", "u1", "a", 1, CREATED, email="a@x.com", is_active=True),

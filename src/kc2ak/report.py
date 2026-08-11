@@ -124,11 +124,30 @@ def build_report(
     }
 
 
+# The one exception to "any unmapped entry gates exit 1": standard_scope_claim
+# is a universal property of every Keycloak -> authentik migration (the same
+# three claims drop on every run, for every client that declares `profile` or
+# `email`), not a per-realm finding an operator needs to review. Gating on it
+# would make exit 0 unreachable forever and teach operators to skip past
+# `unmapped` -- the same reasoning `unmapped_client_fields` already applies to
+# unconditional entries, one level up
+# (.chief/milestone-1/_contract/02-report-schema.md). Framed as an exception
+# (gate unless this one type) rather than an allowlist of gating types, so an
+# unknown future `unmapped` type fails loud (exit 1) instead of silently
+# defaulting to a green exit.
+_NON_GATING_UNMAPPED_TYPE = "standard_scope_claim"
+
+
 def exit_code(entities: list[EntityResult]) -> int:
-    """0 clean, 1 completed with findings -- conflicts, failures, or
-    anything left unmapped (.chief/milestone-1/_contract/01-cli-interface.md).
+    """0 clean, 1 completed with findings -- conflicts, failures, or an
+    unmapped entry other than `_NON_GATING_UNMAPPED_TYPE`
+    (.chief/milestone-1/_contract/01-cli-interface.md).
     """
-    has_findings = any(e.outcome in (CONFLICT, FAILED) or e.unmapped for e in entities)
+    has_findings = any(
+        e.outcome in (CONFLICT, FAILED)
+        or any(u["type"] != _NON_GATING_UNMAPPED_TYPE for u in e.unmapped)
+        for e in entities
+    )
     return 1 if has_findings else 0
 
 

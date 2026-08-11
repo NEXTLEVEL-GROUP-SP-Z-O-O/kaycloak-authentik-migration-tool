@@ -107,6 +107,26 @@ A future milestone could support realm-export input for Argon2-era realms. It is
 out of scope here.
 </details>
 
+## Known limitations
+
+A migrated client's standard OIDC claims are narrower than what authentik ships
+by default. `given_name`, `family_name`, and `email_verified` are not
+reproducible and are omitted rather than approximated — each is reported per
+client in the JSON report's `unmapped` list (as `type: "standard_scope_claim"`),
+but does **not** affect the exit code, since it happens on essentially every
+run rather than signalling something realm-specific to review.
+
+- `given_name` / `family_name`: Keycloak's `firstName` and `lastName` collapse
+  into authentik's single `name` field, so the parts aren't separable — emitting
+  the full name as `given_name` would be a wrong value, not a partial one.
+- `email_verified`: authentik does not track email verification at all, so a
+  reproduced claim would hardcode `true` for every migrated user regardless of
+  their real Keycloak state. Relying parties treat this claim as a security
+  assertion; asserting an unverified address is verified is worse than omitting
+  the claim entirely, so it is left out.
+
+Operators will see these on every run and should expect them.
+
 ## Usage
 
 > Not implemented yet — this section will be filled in as the tool is built.
