@@ -26,16 +26,43 @@ Migration runs in dependency order: groups → users → memberships → applica
 **Dry-run by default.** The tool reads Keycloak and prints the full plan of what it
 would create. Nothing is written to Authentik without `--apply`.
 
-**Matching is by natural key.** Users match on `username`, groups on `name`,
-clients on `clientId`. If an object already exists in Authentik it is skipped and
-listed in the report — existing data is never modified unless you pass
-`--update-existing`, which switches matched objects to a PATCH.
+**Matching is by natural key.** A user counts as already migrated only when
+**both `username` and `email` match**; groups match on `name`, clients on
+`clientId`. If an object already exists in Authentik it is skipped and listed in
+the report — existing data is never modified unless you pass `--update-existing`,
+which switches matched objects to a PATCH.
+
+Partial matches are reported, never guessed at. A Keycloak user whose username
+collides with a different Authentik account is rejected by Authentik (`username`
+is unique there) — the tool records it as a conflict and moves on rather than
+aborting the run. A user whose email collides but whose username does not *will*
+be created, since Authentik does not require emails to be unique; the report
+flags it so the duplicate is visible before anyone acts on it.
 
 **Re-runs are safe.** Because existing objects are skipped, an interrupted
 migration can simply be run again; it will not create duplicates.
 
 **Secrets are never logged.** Admin tokens, client secrets, and credentials are
 redacted in all output, including error paths and HTTP debug logs.
+
+**One realm per run.** Authentik has no equivalent of a Keycloak realm — brands
+configure branding and flows but share one global pool of users, groups, and
+applications, and hard tenancy is a separate Enterprise feature. So the tool maps
+one realm onto one Authentik instance and does not prefix names.
+
+**Groups are flat.** Keycloak allows two groups with the same leaf name in
+different branches; Authentik requires `Group.name` to be globally unique. Rather
+than invent a naming scheme, the tool refuses to guess: a nested group tree is
+reported as an error, not silently flattened.
+
+**Nothing about tokens is guessed.** Keycloak protocol mappers are translated to
+Authentik property mappings only for an explicit whitelist of mapper types. An
+unrecognised mapper does not block the provider — it is recorded as a conflict
+for a human to decide, because a wrongly translated mapper changes token contents
+in a way that only surfaces in production.
+
+Client secrets *are* carried over, so existing client applications keep working
+with nothing more than an issuer URL change.
 
 ## Passwords cannot be migrated
 
@@ -86,20 +113,73 @@ out of scope here.
 
 ```bash
 # Preview the migration. Reads only; writes nothing.
-kc2ak migrate --realm myrealm
+kc2ak migrate --realm myrealm \
+  --authorization-flow default-provider-authorization-explicit-consent \
+  --invalidation-flow default-provider-invalidation-flow
+
+# Users and groups only — no clients, so no flows needed.
+kc2ak migrate --realm myrealm --only groups,users,memberships
 
 # Apply it.
-kc2ak migrate --realm myrealm --apply
+kc2ak migrate --realm myrealm --apply \
+  --authorization-flow default-provider-authorization-explicit-consent \
+  --invalidation-flow default-provider-invalidation-flow
 
-# Apply, and have Authentik mail every migrated user a reset link.
-kc2ak migrate --realm myrealm --apply --send-recovery-email
-
-# Apply, and update objects that already exist in Authentik.
-kc2ak migrate --realm myrealm --apply --update-existing
+# Apply, and have Authentik mail every newly created user a reset link.
+kc2ak migrate --realm myrealm --apply \
+  --send-recovery-email --email-stage <uuid> \
+  --authorization-flow … --invalidation-flow …
 ```
 
 One realm per run. Endpoints and credentials for both systems are read from the
 environment.
+
+## Local test environment
+
+`docker-compose.yml` brings up a throwaway Keycloak + Authentik pair for
+development and verification, plus a seeded Keycloak realm (`kc2ak-test`,
+imported from `deploy/keycloak/realm-kc2ak-test.json`) that exercises the hard
+cases rather than just the happy path: flat groups with memberships, a
+**nested** group (`sales` → `sales/admins` — the tool must report `CONFLICT` /
+`nested_groups_unsupported` on it), a user with no email address, two users
+sharing an email with different usernames, a disabled user, and one
+confidential OIDC client with a wildcard redirect URI and two protocol
+mappers — one inside the whitelist (`oidc-usermodel-property-mapper`), one
+outside it (`oidc-usermodel-realm-role-mapper`; a script-based mapper would
+demonstrate the same "unmapped" case, but this Keycloak version doesn't
+register that provider by default, so it's silently dropped on import —
+`oidc-usermodel-realm-role-mapper` exercises the identical contract path).
+
+```bash
+cp .env.example .env
+docker compose up -d
+```
+
+Keycloak: http://localhost:8081 (realm `kc2ak-test`, admin console login
+`admin`/`admin`). Authentik: http://localhost:9000.
+
+### Getting an Authentik API token
+
+The compose file sets `AUTHENTIK_BOOTSTRAP_TOKEN` on the Authentik containers,
+which turns into a ready-made API token for the `akadmin` superuser on first
+boot — no UI login needed. Its value is `AK_TOKEN` in `.env.example`
+(`kc2ak-local-bootstrap-token` by default):
+
+```bash
+curl -H "Authorization: Bearer kc2ak-local-bootstrap-token" \
+  http://localhost:9000/api/v3/core/users/
+```
+
+### Resource note
+
+The full rig (Keycloak, Authentik server + worker, Postgres, Redis) needs
+roughly 2-3 GB free inside the Docker VM. Docker Desktop's default 4 GB
+allocation may not cover that once other local stacks are also running.
+Symptom: Keycloak exits with code `137` (`docker inspect` shows
+`OOMKilled: true`). Fix: raise Docker Desktop's memory allocation (Settings →
+Resources), or stop other stacks while the rig is up.
+
+Tear down with `docker compose down -v`.
 
 ## Development
 

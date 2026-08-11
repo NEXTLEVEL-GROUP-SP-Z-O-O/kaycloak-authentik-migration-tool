@@ -1,0 +1,73 @@
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0.6
+    command: start-dev --import-realm
+    environment:
+      KEYCLOAK_ADMIN: ${KC_REALM_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:-admin}
+      JAVA_OPTS_APPEND: "-Xms128m -Xmx384m -XX:MaxMetaspaceSize=128m"
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./deploy/keycloak/realm-kc2ak-test.json:/opt/keycloak/data/import/realm-kc2ak-test.json:ro
+
+  postgresql:
+    image: postgres:16.4-alpine
+    environment:
+      POSTGRES_USER: authentik
+      POSTGRES_PASSWORD: authentik
+      POSTGRES_DB: authentik
+    volumes:
+      - authentik-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authentik"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:2024.10.5
+    command: server
+    environment: &authentik-env
+      AUTHENTIK_SECRET_KEY: kc2ak-local-throwaway-secret-key-change-me
+      AUTHENTIK_POSTGRESQL__HOST: postgresql
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: authentik
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_REDIS__HOST: redis
+      AUTHENTIK_BOOTSTRAP_EMAIL: akadmin@example.com
+      AUTHENTIK_BOOTSTRAP_PASSWORD: akadmin
+      AUTHENTIK_BOOTSTRAP_TOKEN: ${AK_TOKEN:-kc2ak-local-bootstrap-token}
+    ports:
+      - "9000:9000"
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "ak", "healthcheck"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2024.10.5
+    command: worker
+    environment: *authentik-env
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  authentik-db:

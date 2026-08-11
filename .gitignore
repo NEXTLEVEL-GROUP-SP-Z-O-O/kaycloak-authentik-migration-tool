@@ -22,6 +22,9 @@ AGENTS.md
 # macOS
 .DS_Store
 
+# Local test rig
+.env
+
 # C extensions
 *.so
 

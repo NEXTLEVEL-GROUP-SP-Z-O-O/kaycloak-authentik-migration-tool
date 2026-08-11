@@ -1,0 +1,158 @@
+{
+  "id": "kc2ak-test",
+  "realm": "kc2ak-test",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "duplicateEmailsAllowed": true,
+  "groups": [
+    {
+      "id": "11111111-0000-0000-0000-000000000001",
+      "name": "engineering",
+      "path": "/engineering",
+      "attributes": {},
+      "subGroups": []
+    },
+    {
+      "id": "11111111-0000-0000-0000-000000000002",
+      "name": "marketing",
+      "path": "/marketing",
+      "attributes": {},
+      "subGroups": []
+    },
+    {
+      "id": "11111111-0000-0000-0000-000000000003",
+      "name": "sales",
+      "path": "/sales",
+      "attributes": {},
+      "subGroups": [
+        {
+          "id": "11111111-0000-0000-0000-000000000004",
+          "name": "admins",
+          "path": "/sales/admins",
+          "attributes": {},
+          "subGroups": []
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "id": "22222222-0000-0000-0000-000000000001",
+      "username": "ajones",
+      "email": "alice@example.com",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Jones",
+      "enabled": true,
+      "groups": ["/engineering"]
+    },
+    {
+      "id": "22222222-0000-0000-0000-000000000002",
+      "username": "bsmith",
+      "email": "bob@example.com",
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Smith",
+      "enabled": true,
+      "groups": ["/engineering"]
+    },
+    {
+      "id": "22222222-0000-0000-0000-000000000003",
+      "username": "cbaker",
+      "email": "carol@example.com",
+      "emailVerified": true,
+      "firstName": "Carol",
+      "lastName": "Baker",
+      "enabled": true,
+      "groups": ["/marketing"]
+    },
+    {
+      "id": "22222222-0000-0000-0000-000000000004",
+      "username": "noemail",
+      "firstName": "No",
+      "lastName": "Email",
+      "enabled": true,
+      "groups": []
+    },
+    {
+      "id": "22222222-0000-0000-0000-000000000005",
+      "username": "euser1",
+      "email": "shared@example.com",
+      "emailVerified": true,
+      "firstName": "Eve",
+      "lastName": "One",
+      "enabled": true,
+      "groups": []
+    },
+    {
+      "id": "22222222-0000-0000-0000-000000000006",
+      "username": "euser2",
+      "email": "shared@example.com",
+      "emailVerified": true,
+      "firstName": "Eve",
+      "lastName": "Two",
+      "enabled": true,
+      "groups": []
+    },
+    {
+      "id": "22222222-0000-0000-0000-000000000007",
+      "username": "disableduser",
+      "email": "disabled@example.com",
+      "emailVerified": true,
+      "firstName": "Disa",
+      "lastName": "Bled",
+      "enabled": false,
+      "groups": ["/sales/admins"]
+    }
+  ],
+  "clients": [
+    {
+      "id": "33333333-0000-0000-0000-000000000001",
+      "clientId": "confidential-app",
+      "name": "Confidential Test App",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "kc2ak-test-client-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "https://app.example.com/callback",
+        "https://*.example.com/*"
+      ],
+      "webOrigins": ["https://app.example.com"],
+      "protocolMappers": [
+        {
+          "name": "username",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "userinfo.token.claim": "true",
+            "user.attribute": "username",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "preferred_username",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}
