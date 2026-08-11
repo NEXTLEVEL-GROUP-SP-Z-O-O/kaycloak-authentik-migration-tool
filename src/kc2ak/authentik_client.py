@@ -54,6 +54,21 @@ class AuthentikClient:
         results: list[object] = response.json().get("results", [])
         return bool(results)
 
+    def get_flow_pk(self, slug: str) -> str:
+        """Resolve a flow slug to its pk (uuid). OAuth2Provider's
+        authorization_flow/invalidation_flow fields reject a slug outright
+        -- confirmed live against authentik 2024.10.5: POSTing the slug
+        string 400s with "not a valid UUID" -- so the provider payload needs
+        the resolved pk, not the slug preconditions already validated with
+        flow_exists(). Only called after that check passed.
+        """
+        response = request_with_retry(
+            self._client, "GET", "/api/v3/flows/instances/", params={"slug": slug}
+        )
+        response.raise_for_status()
+        results: list[dict[str, Any]] = response.json().get("results", [])
+        return str(results[0]["pk"])
+
     def find_user_by_username(self, username: str) -> dict[str, Any] | None:
         """Exact-match lookup on the natural key's unique half. Confirmed
         against a live instance: `?username=` is an exact filter.
@@ -115,6 +130,46 @@ class AuthentikClient:
         Raw response, same convention as create_group.
         """
         return request_with_retry(self._client, "PATCH", f"/api/v3/core/groups/{pk}/", json=payload)
+
+    def find_provider_by_client_id(self, client_id: str) -> dict[str, Any] | None:
+        """Exact-match lookup on the client natural key (`client_id`),
+        mirroring find_user_by_username/find_group_by_name.
+        """
+        response = request_with_retry(
+            self._client, "GET", "/api/v3/providers/oauth2/", params={"client_id": client_id}
+        )
+        response.raise_for_status()
+        results: list[dict[str, Any]] = response.json().get("results", [])
+        return results[0] if results else None
+
+    def create_provider(self, payload: dict[str, Any]) -> httpx.Response:
+        """POST /api/v3/providers/oauth2/. Raw response, same convention as
+        create_user/create_group.
+        """
+        return request_with_retry(self._client, "POST", "/api/v3/providers/oauth2/", json=payload)
+
+    def update_provider(self, pk: int, payload: dict[str, Any]) -> httpx.Response:
+        """PATCH /api/v3/providers/oauth2/{pk}/, only reached under
+        --update-existing. Raw response, same convention as update_group.
+        """
+        return request_with_retry(
+            self._client, "PATCH", f"/api/v3/providers/oauth2/{pk}/", json=payload
+        )
+
+    def find_application_by_slug(self, slug: str) -> dict[str, Any] | None:
+        """Exact-match lookup on the application's slug."""
+        response = request_with_retry(
+            self._client, "GET", "/api/v3/core/applications/", params={"slug": slug}
+        )
+        response.raise_for_status()
+        results: list[dict[str, Any]] = response.json().get("results", [])
+        return results[0] if results else None
+
+    def create_application(self, payload: dict[str, Any]) -> httpx.Response:
+        """POST /api/v3/core/applications/. Raw response, same convention as
+        create_provider.
+        """
+        return request_with_retry(self._client, "POST", "/api/v3/core/applications/", json=payload)
 
     def recovery_flow_configured(self) -> bool:
         """True if the default brand has a recovery flow assigned.

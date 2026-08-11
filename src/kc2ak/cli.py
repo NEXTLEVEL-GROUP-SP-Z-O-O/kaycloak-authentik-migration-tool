@@ -28,6 +28,7 @@ from kc2ak.migrator import (
     SKIPPED,
     UPDATED,
     EntityResult,
+    migrate_clients,
     migrate_groups,
     migrate_memberships,
     migrate_users,
@@ -187,10 +188,12 @@ def migrate(
         # and users I explicitly scoped out."
         groups_apply = apply and "groups" in scope
         users_apply = apply and "users" in scope
+        clients_apply = apply and clients_in_scope
 
         group_results: list[EntityResult] = []
         user_results: list[EntityResult] = []
         membership_results: list[EntityResult] = []
+        client_results: list[EntityResult] = []
         ok_groups: dict[str, str] = {}
         group_pks: dict[str, str] = {}
         group_members: dict[str, set[int]] = {}
@@ -217,6 +220,18 @@ def migrate(
                 user_pks=user_pks,
                 resolved_usernames=resolved_usernames,
             )
+        if clients_in_scope:
+            assert authorization_flow is not None
+            assert invalidation_flow is not None
+            client_results = migrate_clients(
+                kc_client,
+                ak_client,
+                realm,
+                apply=clients_apply,
+                authorization_flow=authorization_flow,
+                invalidation_flow=invalidation_flow,
+                update_existing=update_existing,
+            )
 
         if "groups" in scope:
             typer.echo(_count_line("groups", group_results, update_existing=update_existing))
@@ -226,8 +241,8 @@ def migrate(
             typer.echo(
                 _count_line("memberships", membership_results, update_existing=update_existing)
             )
-        if "clients" in scope:
-            typer.echo(_count_line("clients", [], update_existing=update_existing))
+        if clients_in_scope:
+            typer.echo(_count_line("clients", client_results, update_existing=update_existing))
 
         # Only reachable under --apply (usage error otherwise), so eligible
         # CREATED users have a real Authentik pk -- except when --only
@@ -255,7 +270,7 @@ def migrate(
             typer.echo("dry run — nothing written. re-run with --apply")
 
         finished_at = _now_iso()
-        entities = [*group_results, *user_results, *membership_results]
+        entities = [*group_results, *user_results, *membership_results, *client_results]
         report_data = build_report(
             realm=realm,
             applied=apply,

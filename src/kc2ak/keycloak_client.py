@@ -112,6 +112,31 @@ class KeycloakClient:
             f"/admin/realms/{realm}/groups/{group_id}/members", page_size=page_size
         )
 
+    def get_clients(self, realm: str, *, page_size: int = 100) -> Iterator[dict[str, Any]]:
+        """Paginate GET /admin/realms/{realm}/clients via first/max. Includes
+        Keycloak's built-in clients and non-OIDC clients -- callers filter
+        with mappers.clients.is_migratable_client.
+        """
+        yield from self._paginate(f"/admin/realms/{realm}/clients", page_size=page_size)
+
+    def get_client_secret(self, realm: str, client_id: str) -> str:
+        """GET /admin/realms/{realm}/clients/{id}/client-secret. `client_id`
+        here is Keycloak's internal `id` (uuid), not the OIDC `clientId`.
+        Registers the secret for redaction before returning it, so it never
+        reaches a log line unredacted even from this same call's own debug
+        logging.
+        """
+        response = request_with_retry(
+            self._client,
+            "GET",
+            f"/admin/realms/{realm}/clients/{client_id}/client-secret",
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        secret = str(response.json()["value"])
+        register_secret(secret)
+        return secret
+
     def _paginate(self, path: str, *, page_size: int) -> Iterator[dict[str, Any]]:
         first = 0
         while True:

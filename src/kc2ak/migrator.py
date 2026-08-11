@@ -17,6 +17,13 @@ import httpx
 
 from kc2ak.authentik_client import AuthentikClient
 from kc2ak.keycloak_client import KeycloakClient
+from kc2ak.mappers.clients import (
+    is_migratable_client,
+    map_application,
+    map_provider,
+    slugify,
+    unmapped_client_fields,
+)
 from kc2ak.mappers.groups import NESTED_GROUPS_UNSUPPORTED, is_nested, map_group
 from kc2ak.mappers.users import map_user
 
@@ -325,5 +332,141 @@ def migrate_memberships(
                     results.append(EntityResult("membership", kc_id, ref, group_pk, CREATED))
             except httpx.HTTPError:
                 results.append(EntityResult("membership", kc_id, ref, None, FAILED, API_REJECTED))
+
+    return results
+
+
+def migrate_clients(
+    kc: KeycloakClient,
+    ak: AuthentikClient,
+    realm: str,
+    *,
+    apply: bool,
+    authorization_flow: str,
+    invalidation_flow: str,
+    update_existing: bool = False,
+) -> list[EntityResult]:
+    """One entity per migratable Keycloak OIDC client, representing the
+    OAuth2Provider + Application pair together (report contract's example:
+    a single "client" entity, not two). Keycloak's built-in clients and
+    non-OIDC clients are filtered out entirely -- see
+    mappers.clients.is_migratable_client -- and never appear as entities at
+    all, since they are realm infrastructure, not realm data.
+
+    Matching is by natural key: clientId == the existing provider's
+    client_id (.chief/milestone-1/_goal/03-idempotency-and-matching.md).
+    A matched provider whose application is missing (an interrupted prior
+    run left a half-created pair) has its application finished regardless
+    of --update-existing -- creating a missing counterpart is not modifying
+    an existing object, and skipping it would leave re-runs permanently
+    incomplete.
+    """
+    results: list[EntityResult] = []
+
+    # Resolved once per run, not per client: authorization_flow/
+    # invalidation_flow are CLI-supplied slugs, but OAuth2Provider's fields
+    # of the same name reject a slug and require the flow's pk (confirmed
+    # live -- see AuthentikClient.get_flow_pk). A precondition already
+    # confirmed both slugs resolve before migrate_clients is ever called.
+    authorization_flow_pk = ak.get_flow_pk(authorization_flow)
+    invalidation_flow_pk = ak.get_flow_pk(invalidation_flow)
+
+    for kc_client in kc.get_clients(realm):
+        if not is_migratable_client(kc_client):
+            continue
+
+        client_id = kc_client["clientId"]
+        kc_id = kc_client["id"]
+        name = kc_client.get("name") or client_id
+        slug = slugify(client_id)
+        is_public = kc_client.get("publicClient", False)
+        unmapped = unmapped_client_fields(kc_client)
+
+        try:
+            secret = None if is_public else kc.get_client_secret(realm, kc_id)
+            mapped_provider = map_provider(
+                kc_client,
+                secret,
+                authorization_flow=authorization_flow_pk,
+                invalidation_flow=invalidation_flow_pk,
+            )
+
+            existing_provider = ak.find_provider_by_client_id(client_id)
+            if existing_provider is not None:
+                provider_pk = existing_provider["pk"]
+                existing_app = ak.find_application_by_slug(slug)
+
+                if existing_app is None:
+                    if not apply:
+                        results.append(
+                            EntityResult(
+                                "client", kc_id, client_id, None, CREATED, unmapped=unmapped
+                            )
+                        )
+                        continue
+                    app_response = ak.create_application(
+                        map_application(client_id, provider_pk, name)
+                    )
+                    if app_response.status_code >= 400:
+                        results.append(
+                            EntityResult("client", kc_id, client_id, None, FAILED, API_REJECTED)
+                        )
+                    else:
+                        results.append(
+                            EntityResult(
+                                "client", kc_id, client_id, client_id, CREATED, unmapped=unmapped
+                            )
+                        )
+                    continue
+
+                if not update_existing:
+                    results.append(
+                        EntityResult(
+                            "client", kc_id, client_id, client_id, SKIPPED, unmapped=unmapped
+                        )
+                    )
+                    continue
+                if not apply:
+                    results.append(
+                        EntityResult(
+                            "client", kc_id, client_id, client_id, UPDATED, unmapped=unmapped
+                        )
+                    )
+                    continue
+                update_response = ak.update_provider(provider_pk, mapped_provider)
+                if update_response.status_code >= 400:
+                    results.append(
+                        EntityResult("client", kc_id, client_id, None, FAILED, API_REJECTED)
+                    )
+                else:
+                    results.append(
+                        EntityResult(
+                            "client", kc_id, client_id, client_id, UPDATED, unmapped=unmapped
+                        )
+                    )
+                continue
+
+            if not apply:
+                results.append(
+                    EntityResult("client", kc_id, client_id, None, CREATED, unmapped=unmapped)
+                )
+                continue
+
+            provider_response = ak.create_provider(mapped_provider)
+            if provider_response.status_code >= 400:
+                results.append(EntityResult("client", kc_id, client_id, None, FAILED, API_REJECTED))
+                continue
+            created_provider = provider_response.json()
+            app_response = ak.create_application(
+                map_application(client_id, created_provider["pk"], name)
+            )
+            if app_response.status_code >= 400:
+                results.append(EntityResult("client", kc_id, client_id, None, FAILED, API_REJECTED))
+                continue
+            results.append(
+                EntityResult("client", kc_id, client_id, client_id, CREATED, unmapped=unmapped)
+            )
+        except httpx.HTTPError:
+            results.append(EntityResult("client", kc_id, client_id, None, FAILED, API_REJECTED))
 
     return results
