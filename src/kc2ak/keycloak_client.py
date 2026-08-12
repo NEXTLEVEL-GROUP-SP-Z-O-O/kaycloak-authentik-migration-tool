@@ -119,6 +119,47 @@ class KeycloakClient:
         """
         yield from self._paginate(f"/admin/realms/{realm}/clients", page_size=page_size)
 
+    def get_roles(self, realm: str, *, page_size: int = 100) -> Iterator[dict[str, Any]]:
+        """Paginate GET /admin/realms/{realm}/roles via first/max. Includes
+        Keycloak's built-in roles -- callers filter with
+        mappers.roles.builtin_role_names. Each item's `composite` flag is
+        enough to detect (not expand) a composite role; see
+        mappers/roles.py:is_composite.
+        """
+        yield from self._paginate(f"/admin/realms/{realm}/roles", page_size=page_size)
+
+    def get_user_realm_roles(self, realm: str, user_id: str) -> list[dict[str, Any]]:
+        """GET /admin/realms/{realm}/users/{id}/role-mappings/realm -- the
+        user's **direct** role assignments only, not composite-expanded.
+        Confirmed against Keycloak 25.0.6 in milestone-2 task-1: a user
+        assigned only a composite role returns just that role's own name
+        here, not its constituents (see
+        .chief/milestone-2/_contract/01-role-mapping.md's amendment). Not
+        paginated -- Keycloak returns the full list in one response.
+        """
+        response = request_with_retry(
+            self._client,
+            "GET",
+            f"/admin/realms/{realm}/users/{user_id}/role-mappings/realm",
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        result: list[dict[str, Any]] = response.json()
+        return result
+
+    def get_client_roles(
+        self, realm: str, client_id: str, *, page_size: int = 100
+    ) -> Iterator[dict[str, Any]]:
+        """Paginate GET /admin/realms/{realm}/clients/{id}/roles via
+        first/max. `client_id` here is Keycloak's internal `id` (uuid),
+        matching get_client_secret. Read once per in-scope client purely to
+        report -- client roles are never migrated
+        (.chief/milestone-2/_goal/01-roles-scope.md).
+        """
+        yield from self._paginate(
+            f"/admin/realms/{realm}/clients/{client_id}/roles", page_size=page_size
+        )
+
     def get_client_secret(self, realm: str, client_id: str) -> str:
         """GET /admin/realms/{realm}/clients/{id}/client-secret. `client_id`
         here is Keycloak's internal `id` (uuid), not the OIDC `clientId`.

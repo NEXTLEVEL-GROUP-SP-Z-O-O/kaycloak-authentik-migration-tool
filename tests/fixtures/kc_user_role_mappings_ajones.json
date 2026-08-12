@@ -1,0 +1,10 @@
+[
+    {
+        "id": "b7edbaac-9f00-42ee-b5d8-ad7a5a90e366",
+        "name": "senior-engineer",
+        "description": "Composite realm role -- must CONFLICT / composite_role_unsupported",
+        "composite": true,
+        "clientRole": false,
+        "containerId": "kc2ak-test"
+    }
+]

@@ -1,0 +1,10 @@
+[
+    {
+        "id": "a5a81909-ca8b-4ee4-ae46-691f64387e1d",
+        "name": "offline_access",
+        "description": "${role_offline-access}",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "kc2ak-test"
+    }
+]

@@ -40,10 +40,14 @@ def _load_clients() -> list[dict[str, Any]]:
 
 
 def _kc_client(
-    *, clients: list[dict[str, Any]] | None = None, secrets: dict[str, str] | None = None
+    *,
+    clients: list[dict[str, Any]] | None = None,
+    secrets: dict[str, str] | None = None,
+    client_roles: dict[str, list[dict[str, Any]]] | None = None,
 ) -> KeycloakClient:
     clients = clients or []
     secrets = secrets or {}
+    client_roles = client_roles or {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -56,6 +60,10 @@ def _kc_client(
         if path.endswith("/client-secret"):
             kc_id = path.split("/clients/")[1].split("/client-secret")[0]
             return httpx.Response(200, json={"type": "secret", "value": secrets[kc_id]})
+        if path.endswith("/roles"):
+            kc_id = path.split("/clients/")[1].split("/roles")[0]
+            roles = client_roles.get(kc_id, [])
+            return httpx.Response(200, json=roles[first : first + max_])
         raise AssertionError(f"unexpected Keycloak request: {path}")
 
     client = KeycloakClient(
@@ -177,8 +185,9 @@ def _run(
     apply: bool,
     update_existing: bool = False,
     secrets: dict[str, str] | None = None,
+    client_roles: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[Any]:
-    kc = _kc_client(clients=clients, secrets=secrets or {})
+    kc = _kc_client(clients=clients, secrets=secrets or {}, client_roles=client_roles)
     return migrate_clients(
         kc,
         _ak_client(fake),
@@ -249,6 +258,33 @@ def test_migrate_clients_reports_unmapped_fields_and_stays_created() -> None:
     assert "webOrigins" in names
     assert "standardFlowEnabled" in names
     assert "defaultClientScopes" in names
+
+
+# --- client roles (milestone-2 task-2): reported, never written -------------
+
+
+def test_migrate_clients_reports_client_roles_as_unmapped_and_never_writes_a_group() -> None:
+    # .chief/milestone-2/_goal/01-roles-scope.md: client roles are read once
+    # per in-scope client purely to report -- never migrated as a group, and
+    # the client entity's own outcome (CREATED here) is unaffected.
+    fake = FakeAuthentikClients()
+    kc_client = _confidential_app_client()
+    results = _run(
+        fake,
+        [kc_client],
+        apply=True,
+        secrets={kc_client["id"]: "kc2ak-test-client-secret"},
+        client_roles={kc_client["id"]: [{"id": "cr-1", "name": "admin"}]},
+    )
+    result = results[0]
+    assert result.outcome == CREATED
+    client_role_entries = [e for e in result.unmapped if e["type"] == "client_role"]
+    assert client_role_entries == [
+        {"type": "client_role", "name": "admin", "why": "client roles are not migrated"}
+    ]
+    # FakeAuthentikClients has no group endpoint at all -- if migrate_clients
+    # ever tried to write one, the fake handler would raise AssertionError
+    # rather than silently succeed, so reaching this line already proves it.
 
 
 # --- protocol mapper whitelist (task-5b) ------------------------------------

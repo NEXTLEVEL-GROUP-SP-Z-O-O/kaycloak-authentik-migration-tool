@@ -179,7 +179,10 @@
       "firstName": "No",
       "lastName": "Email",
       "enabled": true,
-      "groups": []
+      "groups": [],
+      "realmRoles": [
+        "offline_access"
+      ]
     },
     {
       "id": "22222222-0000-0000-0000-000000000005",

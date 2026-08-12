@@ -1,0 +1,10 @@
+[
+    {
+        "id": "08f9165a-04fd-4c4e-aa02-e3896a12cbaa",
+        "name": "engineering",
+        "description": "Realm role whose name collides with the 'engineering' group -- must CONFLICT / role_name_taken_by_group",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "kc2ak-test"
+    }
+]

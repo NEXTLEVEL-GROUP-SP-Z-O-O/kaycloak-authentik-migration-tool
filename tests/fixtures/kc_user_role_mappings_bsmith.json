@@ -1,0 +1,10 @@
+[
+    {
+        "id": "a8b90699-e008-4d75-a968-9e8834605aa3",
+        "name": "employee",
+        "description": "Plain realm role, migrates cleanly to a group",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "kc2ak-test"
+    }
+]

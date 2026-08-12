@@ -1,0 +1,10 @@
+[
+    {
+        "id": "d7361535-8584-4d41-8c1b-8fb6432b7874",
+        "name": "admin",
+        "description": "Client role, same name as internal-tool's 'admin' -- reported unmapped, never migrated",
+        "composite": false,
+        "clientRole": true,
+        "containerId": "33333333-0000-0000-0000-000000000001"
+    }
+]

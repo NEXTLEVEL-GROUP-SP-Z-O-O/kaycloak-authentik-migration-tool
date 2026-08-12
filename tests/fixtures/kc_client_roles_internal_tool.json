@@ -1,0 +1,10 @@
+[
+    {
+        "id": "8c3e68f6-5c13-480c-8445-7bbbefbde31a",
+        "name": "admin",
+        "description": "Client role, same name as confidential-app's 'admin' -- reported unmapped, never migrated",
+        "composite": false,
+        "clientRole": true,
+        "containerId": "33333333-0000-0000-0000-000000000002"
+    }
+]

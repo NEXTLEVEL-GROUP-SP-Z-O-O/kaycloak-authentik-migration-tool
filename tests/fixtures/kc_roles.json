@@ -1,0 +1,58 @@
+[
+    {
+        "id": "d3146f9f-0d39-44c5-8b53-b011e258abc0",
+        "name": "code-reviewer",
+        "description": "Plain realm role, constituent of the composite below",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "kc2ak-test"
+    },
+    {
+        "id": "131830ab-a691-4b17-b8a0-deb46731e535",
+        "name": "default-roles-kc2ak-test",
+        "description": "${role_default-roles}",
+        "composite": true,
+        "clientRole": false,
+        "containerId": "kc2ak-test"
+    },
+    {
+        "id": "a8b90699-e008-4d75-a968-9e8834605aa3",
+        "name": "employee",
+        "description": "Plain realm role, migrates cleanly to a group",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "kc2ak-test"
+    },
+    {
+        "id": "08f9165a-04fd-4c4e-aa02-e3896a12cbaa",
+        "name": "engineering",
+        "description": "Realm role whose name collides with the 'engineering' group -- must CONFLICT / role_name_taken_by_group",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "kc2ak-test"
+    },
+    {
+        "id": "a5a81909-ca8b-4ee4-ae46-691f64387e1d",
+        "name": "offline_access",
+        "description": "${role_offline-access}",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "kc2ak-test"
+    },
+    {
+        "id": "b7edbaac-9f00-42ee-b5d8-ad7a5a90e366",
+        "name": "senior-engineer",
+        "description": "Composite realm role -- must CONFLICT / composite_role_unsupported",
+        "composite": true,
+        "clientRole": false,
+        "containerId": "kc2ak-test"
+    },
+    {
+        "id": "29ce6f71-8f02-4045-b2a2-e1ec89327f7e",
+        "name": "uma_authorization",
+        "description": "${role_uma_authorization}",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "kc2ak-test"
+    }
+]

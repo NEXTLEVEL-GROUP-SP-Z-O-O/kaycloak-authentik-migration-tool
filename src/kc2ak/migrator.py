@@ -1,12 +1,13 @@
-"""Read -> map -> diff -> write orchestration for groups, users, and
-memberships, in the fixed order from
-.chief/milestone-1/_goal/01-migration-scope.md.
+"""Read -> map -> diff -> write orchestration for groups, users, memberships,
+clients, and (milestone-2) realm roles and role assignments.
 
 Dry-run is the default: writes only happen when apply=True. Every write path
 is behind that flag, per
-.chief/milestone-1/_goal/02-safety-and-blast-radius.md. Clients/providers are
-task-5; the report writer and stdout summary are task-3 -- this module only
-produces EntityResult records in memory for them to consume.
+.chief/milestone-1/_goal/02-safety-and-blast-radius.md. migrate_roles and
+migrate_role_assignments are not yet wired into cli.py -- that CLI surface
+(--only roles, the roles/idps/federated-links counts blocks) is
+milestone-2 task-3's job; this module only produces EntityResult records in
+memory for it to consume.
 """
 
 from __future__ import annotations
@@ -27,6 +28,17 @@ from kc2ak.mappers.clients import (
 )
 from kc2ak.mappers.groups import NESTED_GROUPS_UNSUPPORTED, is_nested, map_group
 from kc2ak.mappers.protocol_mappers import translate_client_protocol_mappers
+from kc2ak.mappers.roles import (
+    COMPOSITE_ROLE_UNSUPPORTED,
+    ROLE_ASSIGNMENT_ROLE_MISSING,
+    ROLE_NAME_TAKEN_BY_GROUP,
+    builtin_role_names,
+    is_composite,
+    is_role_origin,
+    map_role,
+    unmapped_client_roles,
+    unmapped_role_fields,
+)
 from kc2ak.mappers.users import map_user
 
 CREATED = "CREATED"
@@ -338,6 +350,197 @@ def migrate_memberships(
     return results
 
 
+def migrate_roles(
+    kc: KeycloakClient,
+    ak: AuthentikClient,
+    realm: str,
+    *,
+    apply: bool,
+    update_existing: bool = False,
+) -> tuple[list[EntityResult], dict[str, str], set[str], dict[str, set[int]]]:
+    """Returns (results, role_pks, role_conflicted, role_members).
+
+    A realm role becomes an Authentik group tagged
+    attributes.kc2ak_origin == "realm_role" (mappers.roles.map_role).
+    Built-in roles (mappers.roles.builtin_role_names) are excluded before
+    the read is counted -- they never become report entities at all,
+    exactly like Keycloak's six built-in clients
+    (mappers.clients.BUILTIN_CLIENT_IDS). A composite role and a name
+    collision with a group not of role origin are both CONFLICT and write
+    nothing (.chief/milestone-2/_contract/01-role-mapping.md).
+
+    role_pks maps role name -> Authentik group pk, for every role matched or
+    (under --apply) newly created -- migrate_role_assignments uses it the
+    same way migrate_memberships uses migrate_groups' group_pks.
+
+    role_conflicted is every role name whose outcome was CONFLICT.
+    migrate_role_assignments uses it to give an assignment to one of these
+    its own CONFLICT / role_assignment_role_missing entity, rather than
+    silently dropping it -- .chief/milestone-2/_contract/01-role-mapping.md's
+    "An assignment to a role that was not migrated".
+
+    role_members maps role name -> the Authentik user pks already in that
+    group, same purpose as migrate_groups' group_members.
+    """
+    results: list[EntityResult] = []
+    role_pks: dict[str, str] = {}
+    role_conflicted: set[str] = set()
+    role_members: dict[str, set[int]] = {}
+    builtin = builtin_role_names(realm)
+
+    for kc_role in kc.get_roles(realm):
+        name = kc_role["name"]
+        if name in builtin:
+            continue
+        kc_id = kc_role["id"]
+        unmapped = unmapped_role_fields(kc_role)
+
+        if is_composite(kc_role):
+            role_conflicted.add(name)
+            results.append(
+                EntityResult(
+                    "role", kc_id, name, None, CONFLICT, COMPOSITE_ROLE_UNSUPPORTED, unmapped
+                )
+            )
+            continue
+
+        try:
+            existing = ak.find_group_by_name(name)
+            if existing is not None:
+                if not is_role_origin(existing):
+                    role_conflicted.add(name)
+                    results.append(
+                        EntityResult(
+                            "role", kc_id, name, None, CONFLICT, ROLE_NAME_TAKEN_BY_GROUP, unmapped
+                        )
+                    )
+                    continue
+
+                role_pks[name] = existing["pk"]
+                role_members[name] = set(existing.get("users") or [])
+                pk = existing["pk"]
+                if not update_existing:
+                    results.append(
+                        EntityResult("role", kc_id, name, pk, SKIPPED, unmapped=unmapped)
+                    )
+                    continue
+                if not apply:
+                    results.append(
+                        EntityResult("role", kc_id, name, pk, UPDATED, unmapped=unmapped)
+                    )
+                    continue
+                update_response = ak.update_group(pk, map_role(kc_role))
+                if update_response.status_code >= 400:
+                    results.append(EntityResult("role", kc_id, name, None, FAILED, API_REJECTED))
+                else:
+                    results.append(
+                        EntityResult("role", kc_id, name, pk, UPDATED, unmapped=unmapped)
+                    )
+                continue
+
+            if not apply:
+                results.append(EntityResult("role", kc_id, name, None, CREATED, unmapped=unmapped))
+                continue
+
+            response = ak.create_group(map_role(kc_role))
+            if response.status_code >= 400:
+                results.append(EntityResult("role", kc_id, name, None, FAILED, API_REJECTED))
+                continue
+            created = response.json()
+            role_pks[name] = created["pk"]
+            role_members[name] = set()
+            results.append(
+                EntityResult("role", kc_id, name, created["pk"], CREATED, unmapped=unmapped)
+            )
+        except httpx.HTTPError:
+            results.append(EntityResult("role", kc_id, name, None, FAILED, API_REJECTED))
+
+    return results, role_pks, role_conflicted, role_members
+
+
+def migrate_role_assignments(
+    kc: KeycloakClient,
+    ak: AuthentikClient,
+    realm: str,
+    *,
+    apply: bool,
+    role_pks: dict[str, str],
+    role_conflicted: set[str],
+    role_members: dict[str, set[int]],
+    user_pks: dict[str, int],
+    resolved_usernames: set[str],
+) -> list[EntityResult]:
+    """One `membership` entity per (user, non-built-in role) pair, read from
+    each resolved user's role-mappings/realm -- the direct-assignment list,
+    not composite-expanded (see KeycloakClient.get_user_realm_roles). Role
+    assignments are not their own kind: they are group memberships, counted
+    under counts.memberships exactly like a Keycloak group membership
+    (.chief/milestone-2/_contract/01-role-mapping.md).
+
+    A user whose own entity did not resolve at all is silently excluded,
+    same reasoning as migrate_memberships. A role that itself ended
+    CONFLICT is different: its holder gets their own CONFLICT /
+    role_assignment_role_missing entity rather than being dropped, because
+    the role's own CONFLICT names a failed role, not who lost access.
+    """
+    results: list[EntityResult] = []
+    builtin = builtin_role_names(realm)
+
+    for kc_user in kc.get_users(realm):
+        username = kc_user["username"]
+        if username not in resolved_usernames:
+            continue
+        kc_user_id = kc_user["id"]
+
+        for kc_role in kc.get_user_realm_roles(realm, kc_user_id):
+            role_name = kc_role["name"]
+            if role_name in builtin:
+                continue
+
+            kc_id = f"{kc_user_id}:{role_name}"
+            ref = f"{username}/{role_name}"
+
+            if role_name in role_conflicted:
+                results.append(
+                    EntityResult(
+                        "membership", kc_id, ref, None, CONFLICT, ROLE_ASSIGNMENT_ROLE_MISSING
+                    )
+                )
+                continue
+
+            group_pk = role_pks.get(role_name)
+            user_pk = user_pks.get(username)
+
+            if (
+                user_pk is not None
+                and group_pk is not None
+                and user_pk in role_members.get(role_name, set())
+            ):
+                results.append(EntityResult("membership", kc_id, ref, group_pk, SKIPPED))
+                continue
+
+            if not apply:
+                results.append(EntityResult("membership", kc_id, ref, None, CREATED))
+                continue
+
+            if group_pk is None or user_pk is None:
+                results.append(EntityResult("membership", kc_id, ref, None, FAILED, API_REJECTED))
+                continue
+
+            try:
+                response = ak.add_user_to_group(group_pk, user_pk)
+                if response.status_code >= 400:
+                    results.append(
+                        EntityResult("membership", kc_id, ref, None, FAILED, API_REJECTED)
+                    )
+                else:
+                    results.append(EntityResult("membership", kc_id, ref, group_pk, CREATED))
+            except httpx.HTTPError:
+                results.append(EntityResult("membership", kc_id, ref, None, FAILED, API_REJECTED))
+
+    return results
+
+
 def migrate_clients(
     kc: KeycloakClient,
     ak: AuthentikClient,
@@ -402,9 +605,17 @@ def migrate_clients(
         is_public = kc_client.get("publicClient", False)
         mapper_payloads, mapper_unmapped = translate_client_protocol_mappers(kc_client, client_id)
         standard_payloads, standard_unmapped = standard_scope_mappings(kc_client, client_id)
-        unmapped = unmapped_client_fields(kc_client) + mapper_unmapped + standard_unmapped
 
         try:
+            # Read once per in-scope client purely to report -- client roles
+            # are never migrated (.chief/milestone-2/_goal/01-roles-scope.md).
+            role_unmapped = unmapped_client_roles(list(kc.get_client_roles(realm, kc_id)))
+            unmapped = (
+                unmapped_client_fields(kc_client)
+                + mapper_unmapped
+                + standard_unmapped
+                + role_unmapped
+            )
             secret = None if is_public else kc.get_client_secret(realm, kc_id)
             mapped_provider = map_provider(
                 kc_client,

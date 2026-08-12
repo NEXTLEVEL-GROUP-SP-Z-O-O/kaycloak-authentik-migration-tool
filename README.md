@@ -248,6 +248,12 @@ time, and `providerId: "linkedin"` aborts the entire server boot rather than
 being dropped — `GET /admin/serverinfo`'s `providers.social.providers`
 confirms `linkedin-openid-connect` is the one actually registered.
 
+Task-2 added one more case: the `noemail` user carries an explicit
+`realmRoles: [offline_access]` assignment, since a realm-file-imported user
+otherwise receives no built-in role assignment at all — the built-in-role
+filter was previously only exercised at the realm level, never at the
+per-user assignment level.
+
 ```bash
 cp .env.example .env
 docker compose up -d
