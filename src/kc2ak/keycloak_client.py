@@ -160,6 +160,36 @@ class KeycloakClient:
             f"/admin/realms/{realm}/clients/{client_id}/roles", page_size=page_size
         )
 
+    def get_identity_providers(
+        self, realm: str, *, page_size: int = 100
+    ) -> Iterator[dict[str, Any]]:
+        """Paginate GET /admin/realms/{realm}/identity-provider/instances via
+        first/max. `config.clientSecret` on every result is the literal
+        string "**********" -- confirmed live, no route returns it unmasked
+        (.chief/milestone-2/_contract/02-idp-mapping.md). `internalId` is
+        each provider's own uuid, distinct from its `alias`.
+        """
+        yield from self._paginate(
+            f"/admin/realms/{realm}/identity-provider/instances", page_size=page_size
+        )
+
+    def get_idp_mappers(self, realm: str, alias: str) -> list[dict[str, Any]]:
+        """GET /admin/realms/{realm}/identity-provider/instances/{alias}/mappers.
+        Not paginated -- Keycloak returns the full list in one response, same
+        as get_user_realm_roles. Read once per in-scope IdP purely to report
+        -- IdP mappers are never translated
+        (.chief/milestone-2/_contract/02-idp-mapping.md).
+        """
+        response = request_with_retry(
+            self._client,
+            "GET",
+            f"/admin/realms/{realm}/identity-provider/instances/{alias}/mappers",
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        result: list[dict[str, Any]] = response.json()
+        return result
+
     def get_client_secret(self, realm: str, client_id: str) -> str:
         """GET /admin/realms/{realm}/clients/{id}/client-secret. `client_id`
         here is Keycloak's internal `id` (uuid), not the OIDC `clientId`.

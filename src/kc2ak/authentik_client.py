@@ -240,6 +240,69 @@ class AuthentikClient:
             params={"email_stage": email_stage},
         )
 
+    def find_source_by_slug(self, slug: str) -> dict[str, Any] | None:
+        """Exact-match lookup on the source natural key (`slug`), type-agnostic
+        -- `/api/v3/sources/all/` lists every Source subclass together
+        (confirmed live), which is what lets migrate_idps match an existing
+        source without first knowing whether it's OAuth or SAML.
+        """
+        response = request_with_retry(
+            self._client, "GET", "/api/v3/sources/all/", params={"slug": slug}
+        )
+        response.raise_for_status()
+        results: list[dict[str, Any]] = response.json().get("results", [])
+        return results[0] if results else None
+
+    def create_oauth_source(self, payload: dict[str, Any]) -> httpx.Response:
+        """POST /api/v3/sources/oauth/. Raw response, same convention as
+        create_group/create_provider.
+        """
+        return request_with_retry(self._client, "POST", "/api/v3/sources/oauth/", json=payload)
+
+    def update_oauth_source(self, slug: str, payload: dict[str, Any]) -> httpx.Response:
+        """PATCH /api/v3/sources/oauth/{slug}/, only reached under
+        --update-existing. Confirmed live: OAuthSource's lookup field is its
+        `slug`, not a separate pk, unlike group/provider/user.
+        """
+        return request_with_retry(
+            self._client, "PATCH", f"/api/v3/sources/oauth/{slug}/", json=payload
+        )
+
+    def create_saml_source(self, payload: dict[str, Any]) -> httpx.Response:
+        """POST /api/v3/sources/saml/. Raw response, same convention as
+        create_oauth_source.
+        """
+        return request_with_retry(self._client, "POST", "/api/v3/sources/saml/", json=payload)
+
+    def update_saml_source(self, slug: str, payload: dict[str, Any]) -> httpx.Response:
+        """PATCH /api/v3/sources/saml/{slug}/, only reached under
+        --update-existing. Same slug-keyed convention as update_oauth_source.
+        """
+        return request_with_retry(
+            self._client, "PATCH", f"/api/v3/sources/saml/{slug}/", json=payload
+        )
+
+    def find_certificate_keypair_by_name(self, name: str) -> dict[str, Any] | None:
+        """Exact-match lookup on CertificateKeyPair's `name` -- used to
+        find-or-create so a re-run imports Keycloak's signing certificate
+        once rather than accumulating a new keypair on every migrate.
+        """
+        response = request_with_retry(
+            self._client, "GET", "/api/v3/crypto/certificatekeypairs/", params={"name": name}
+        )
+        response.raise_for_status()
+        results: list[dict[str, Any]] = response.json().get("results", [])
+        return results[0] if results else None
+
+    def create_certificate_keypair(self, payload: dict[str, Any]) -> httpx.Response:
+        """POST /api/v3/crypto/certificatekeypairs/. Raw response, same
+        convention as create_oauth_source. `certificate_data` must be full
+        PEM -- see mappers.idps.pem_certificate.
+        """
+        return request_with_retry(
+            self._client, "POST", "/api/v3/crypto/certificatekeypairs/", json=payload
+        )
+
     def add_user_to_group(self, group_pk: str, user_pk: int) -> httpx.Response:
         """POST /api/v3/core/groups/{pk}/add_user/ with the integer user pk
         (not the uuid). Confirmed idempotent against a live instance -- a

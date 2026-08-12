@@ -22,6 +22,9 @@ def check_preconditions(
     invalidation_flow: str | None,
     send_recovery_email: bool,
     email_stage: str | None,
+    idps_in_scope: bool = False,
+    realm: str = "",
+    pre_authentication_flow: str | None = None,
 ) -> None:
     """Run every precondition, raising PreconditionError on the first
     failure. Nothing is written to Authentik before or during this call.
@@ -46,6 +49,24 @@ def check_preconditions(
             raise PreconditionError(f"authorization flow {authorization_flow!r} does not exist")
         if not ak_client.flow_exists(invalidation_flow):
             raise PreconditionError(f"invalidation flow {invalidation_flow!r} does not exist")
+
+    if idps_in_scope and any(
+        idp["providerId"] == "saml" for idp in kc_client.get_identity_providers(realm)
+    ):
+        # --pre-authentication-flow is only required when a SAML IdP is
+        # actually present -- the same conditional shape as
+        # --authorization-flow, required only when clients are
+        # (.chief/milestone-2/_contract/03-cli-and-report-extensions.md).
+        # Whether one is present can only be known by reading Keycloak, so
+        # unlike the clients flows this can't be checked from the flag alone.
+        if not pre_authentication_flow:
+            raise PreconditionError(
+                "--pre-authentication-flow is required when a SAML identity provider is in scope"
+            )
+        if not ak_client.flow_exists(pre_authentication_flow):
+            raise PreconditionError(
+                f"pre-authentication flow {pre_authentication_flow!r} does not exist"
+            )
 
     if send_recovery_email:
         assert email_stage is not None

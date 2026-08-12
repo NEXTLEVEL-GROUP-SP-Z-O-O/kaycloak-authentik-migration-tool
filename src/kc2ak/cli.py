@@ -21,7 +21,9 @@ from typer._click.exceptions import UsageError as ClickUsageError
 from kc2ak.authentik_client import AuthentikClient
 from kc2ak.config import Config
 from kc2ak.errors import PreconditionError, UsageError
+from kc2ak.idp_secrets import read_idp_secrets
 from kc2ak.keycloak_client import KeycloakClient
+from kc2ak.mappers.idps import IDP_SECRET_MISSING
 from kc2ak.migrator import (
     CONFLICT,
     CREATED,
@@ -30,6 +32,7 @@ from kc2ak.migrator import (
     EntityResult,
     migrate_clients,
     migrate_groups,
+    migrate_idps,
     migrate_memberships,
     migrate_role_assignments,
     migrate_roles,
@@ -136,6 +139,12 @@ def migrate(
     invalidation_flow: str | None = typer.Option(
         None, "--invalidation-flow", help="Flow assigned to every created OAuth2 provider"
     ),
+    idp_secrets: Path | None = typer.Option(
+        None, "--idp-secrets", help="Path to a JSON file mapping IdP alias -> secret"
+    ),
+    pre_authentication_flow: str | None = typer.Option(
+        None, "--pre-authentication-flow", help="Flow assigned to every created SAML source"
+    ),
     update_existing: bool = typer.Option(
         False, "--update-existing", help="PATCH matched objects instead of skipping them"
     ),
@@ -159,15 +168,27 @@ def migrate(
             raise UsageError("--send-recovery-email requires --apply")
         scope = _parse_only(only)
         clients_in_scope = "clients" in scope
+        idps_in_scope = "idps" in scope
         if clients_in_scope and (not authorization_flow or not invalidation_flow):
             raise UsageError(
                 "--authorization-flow and --invalidation-flow are required unless "
                 "--only excludes clients"
             )
+        if idp_secrets is not None and not idps_in_scope:
+            raise UsageError("--idp-secrets requires idps in --only scope")
         cfg = Config.from_env()
+        idp_secrets_map: dict[str, str] = {}
+        if idp_secrets is not None and idps_in_scope:
+            idp_secrets_map = read_idp_secrets(idp_secrets)
     except UsageError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=3) from None
+    except PreconditionError as exc:
+        # Only read_idp_secrets can reach a PreconditionError this early --
+        # a missing/unreadable file is an environment problem, not a usage
+        # one, per .chief/milestone-2/_contract/03-cli-and-report-extensions.md.
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from None
 
     kc_client = KeycloakClient(
         cfg.kc_url,
@@ -187,6 +208,9 @@ def migrate(
                 invalidation_flow=invalidation_flow,
                 send_recovery_email=send_recovery_email,
                 email_stage=email_stage,
+                idps_in_scope=idps_in_scope,
+                realm=realm,
+                pre_authentication_flow=pre_authentication_flow,
             )
         except PreconditionError as exc:
             typer.echo(f"error: {exc}", err=True)
@@ -203,10 +227,10 @@ def migrate(
         # fixed order .chief/milestone-2/_contract/03-cli-and-report-extensions.md
         # requires regardless of the order --only listed them in: idps ->
         # groups -> roles -> users -> memberships -> role assignments ->
-        # federated links -> clients. idps and federated-links have no
-        # migrator yet (task-4/task-5), so those two always produce zero
-        # entities; the rows and counts blocks still exist so the seam is
-        # explicit rather than half-built.
+        # federated links -> clients. federated-links has no migrator yet
+        # (task-5), so it always produces zero entities; the row and counts
+        # block still exists so the seam is explicit rather than half-built.
+        idps_apply = apply and idps_in_scope
         need_groups = "groups" in scope or "memberships" in scope
         need_roles = "roles" in scope
         # A role's own creation never needs users (it matches/creates a
@@ -242,6 +266,16 @@ def migrate(
         user_pks: dict[str, int] = {}
         resolved_usernames: set[str] = set()
 
+        if idps_in_scope:
+            idp_results = migrate_idps(
+                kc_client,
+                ak_client,
+                realm,
+                apply=idps_apply,
+                update_existing=update_existing,
+                secrets=idp_secrets_map,
+                pre_authentication_flow=pre_authentication_flow,
+            )
         if need_groups:
             group_results, ok_groups, group_pks, group_members = migrate_groups(
                 kc_client, ak_client, realm, apply=groups_apply, update_existing=update_existing
@@ -303,6 +337,21 @@ def migrate(
 
         if "idps" in scope:
             typer.echo(_count_line("idps", idp_results, update_existing=update_existing))
+            disabled_count = sum(
+                1
+                for r in idp_results
+                if r.kind == "idp"
+                and r.outcome == CREATED
+                and any(u["type"] == IDP_SECRET_MISSING for u in r.unmapped)
+            )
+            if disabled_count:
+                # Unconditional on --apply, same as the recovery-mail line --
+                # a dry run must show this too, or it promises a plan it
+                # doesn't fully disclose
+                # (.chief/milestone-2/_contract/03-cli-and-report-extensions.md).
+                typer.echo(
+                    f"{disabled_count} identity providers created disabled — no secret supplied"
+                )
         if "groups" in scope:
             typer.echo(_count_line("groups", group_results, update_existing=update_existing))
         if "roles" in scope:

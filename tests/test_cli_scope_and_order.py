@@ -7,8 +7,10 @@ httpx.MockTransport, following the same pattern as test_cli_recovery_mail.py,
 so the whole migrate() path -- preconditions, every migrate_* function, the
 report -- runs for real against fakes shaped like the live APIs.
 
-"idps" and "federated-links" have no migrator yet (task-4/task-5): they are
-exercised here only as CLI surface (parsed, ordered, printed, zero writes).
+"federated-links" has no migrator yet (task-5): it is exercised here only as
+CLI surface (parsed, ordered, printed, zero writes). "idps" now has a real
+migrator (task-4); this file's fake Keycloak has no seeded identity
+providers, so it still exercises the same "in scope, writes nothing" shape.
 """
 
 from __future__ import annotations
@@ -93,6 +95,8 @@ def _kc_handler(
             return httpx.Response(200, json=user_roles.get(uid, []))
         if path.endswith("/clients"):
             return httpx.Response(200, json=clients[first : first + max_])
+        if path.endswith("/identity-provider/instances"):
+            return httpx.Response(200, json=[])
         raise AssertionError(f"unexpected Keycloak request: {path}")
 
     return handler
@@ -495,6 +499,7 @@ def test_processing_order_enforced_regardless_of_only_order(
     def first_index(suffix: str) -> int:
         return next(i for i, p in enumerate(paths) if p.endswith(suffix))
 
+    idps_i = first_index("/identity-provider/instances")
     groups_i = first_index("/groups")
     roles_i = first_index("/roles")
     users_i = first_index("/users")
@@ -502,7 +507,7 @@ def test_processing_order_enforced_regardless_of_only_order(
     role_mappings_i = first_index("/role-mappings/realm")
     clients_i = first_index("/clients")
 
-    assert groups_i < roles_i < users_i < members_i < role_mappings_i < clients_i
+    assert idps_i < groups_i < roles_i < users_i < members_i < role_mappings_i < clients_i
 
 
 # --- Counts reconcile against entities across old and new kinds, in one run.

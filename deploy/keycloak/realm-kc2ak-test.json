@@ -57,10 +57,9 @@
       "config": {
         "clientId": "kc2ak-test-oidc-client",
         "clientSecret": "kc2ak-test-idp-secret",
-        "authorizationUrl": "https://sso.example.com/auth",
-        "tokenUrl": "https://sso.example.com/token",
-        "userInfoUrl": "https://sso.example.com/userinfo",
-        "issuer": "https://sso.example.com",
+        "authorizationUrl": "http://localhost:8081/realms/kc2ak-test/protocol/openid-connect/auth",
+        "tokenUrl": "http://keycloak:8080/realms/kc2ak-test/protocol/openid-connect/token",
+        "userInfoUrl": "http://keycloak:8080/realms/kc2ak-test/protocol/openid-connect/userinfo",
         "clientAuthMethod": "client_secret_post",
         "syncMode": "IMPORT"
       }
@@ -86,6 +85,18 @@
         "clientId": "kc2ak-test-linkedin-client",
         "clientSecret": "kc2ak-test-linkedin-secret",
         "syncMode": "IMPORT"
+      }
+    }
+  ],
+  "identityProviderMappers": [
+    {
+      "name": "department-attribute",
+      "identityProviderAlias": "corporate-sso",
+      "identityProviderMapper": "oidc-user-attribute-idp-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "claim": "department",
+        "user.attribute": "department"
       }
     }
   ],
@@ -156,6 +167,13 @@
       ],
       "realmRoles": [
         "employee"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "kc2ak-test-bsmith-pw",
+          "temporary": false
+        }
       ]
     },
     {
@@ -355,6 +373,22 @@
       ],
       "webOrigins": [
         "https://internal.example.com"
+      ]
+    },
+    {
+      "id": "33333333-0000-0000-0000-000000000003",
+      "clientId": "kc2ak-test-oidc-client",
+      "name": "kc2ak task-4 live-verification upstream client",
+      "description": "Stand-in for corporate-sso's real external OIDC IdP, live login check",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "kc2ak-test-idp-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:9000/source/oauth/callback/corporate-sso/"
       ]
     }
   ]

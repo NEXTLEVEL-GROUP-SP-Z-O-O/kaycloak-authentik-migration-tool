@@ -1,0 +1,13 @@
+[
+    {
+        "id": "bb3c113c-9646-4c06-82a6-279172a623ab",
+        "name": "department-attribute",
+        "identityProviderAlias": "corporate-sso",
+        "identityProviderMapper": "oidc-user-attribute-idp-mapper",
+        "config": {
+            "syncMode": "INHERIT",
+            "claim": "department",
+            "user.attribute": "department"
+        }
+    }
+]

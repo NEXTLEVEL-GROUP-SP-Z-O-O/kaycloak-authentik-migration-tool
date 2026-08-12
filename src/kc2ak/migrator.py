@@ -13,6 +13,7 @@ memory for it to consume.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 import httpx
 
@@ -27,6 +28,16 @@ from kc2ak.mappers.clients import (
     unmapped_client_fields,
 )
 from kc2ak.mappers.groups import NESTED_GROUPS_UNSUPPORTED, is_nested, map_group
+from kc2ak.mappers.idps import (
+    IDP_SECRET_MISSING,
+    IDP_TYPE_UNSUPPORTED,
+    map_oauth_source,
+    map_saml_source,
+    pem_certificate,
+    resolved_secret,
+    source_kind,
+    unmapped_idp_mappers,
+)
 from kc2ak.mappers.protocol_mappers import translate_client_protocol_mappers
 from kc2ak.mappers.roles import (
     COMPOSITE_ROLE_UNSUPPORTED,
@@ -71,6 +82,192 @@ class EntityResult:
     # projects only the schema fields, so these never leak into the JSON.
     email: str = ""
     is_active: bool = True
+
+
+def _saml_signing_kp(ak: AuthentikClient, kc_idp: dict[str, Any]) -> str | None:
+    """Find-or-create the CertificateKeyPair for a SAML IdP's signing
+    certificate, mirroring migrate_clients' find_scope_mapping_by_name
+    pattern so a re-run imports the certificate once rather than
+    accumulating a new keypair every migrate. Only called from an apply
+    branch -- creating a keypair is a write, and importing it speculatively
+    on a dry run or a matched (SKIPPED) source would violate
+    .chief/milestone-1/_goal/02-safety-and-blast-radius.md. Returns None
+    when Keycloak's config has no certificate; SAMLSourceRequest does not
+    require one.
+    """
+    cert = (kc_idp.get("config") or {}).get("signingCertificate")
+    if not cert:
+        return None
+    name = f"kc2ak: {kc_idp['alias']} signing certificate"
+    existing = ak.find_certificate_keypair_by_name(name)
+    if existing is not None:
+        return str(existing["pk"])
+    response = ak.create_certificate_keypair(
+        {"name": name, "certificate_data": pem_certificate(cert)}
+    )
+    response.raise_for_status()
+    return str(response.json()["pk"])
+
+
+def migrate_idps(
+    kc: KeycloakClient,
+    ak: AuthentikClient,
+    realm: str,
+    *,
+    apply: bool,
+    update_existing: bool = False,
+    secrets: dict[str, str] | None = None,
+    pre_authentication_flow: str | None = None,
+) -> list[EntityResult]:
+    """One entity per Keycloak identity provider, matched against an
+    authentik source by natural key (source `slug` <- IdP `alias`,
+    type-agnostic via AuthentikClient.find_source_by_slug). A providerId
+    outside the whitelist (mappers.idps.source_kind) is CONFLICT /
+    idp_type_unsupported and writes nothing -- mapping an unrecognised
+    social provider onto generic openidconnect would mean inventing
+    endpoint URLs (.chief/milestone-2/_contract/02-idp-mapping.md). Also
+    recorded in `unmapped` with the raw providerId, since the CONFLICT
+    reason slug alone does not surface it anywhere in the report (decision
+    recorded in .chief/milestone-2/_contract/03-cli-and-report-extensions.md's
+    amendment).
+
+    An OAuth-family source is created (or, under --update-existing, updated)
+    `enabled` only when `secrets` has a real value for that alias
+    (mappers.idps.resolved_secret); otherwise it is written disabled with a
+    placeholder secret and an `unmapped` entry of type idp_secret_missing --
+    computed the same on a dry run as an applied one, so the CLI's "N
+    identity providers created disabled" line is accurate before --apply,
+    not just after. Never attached to a SKIPPED match: nothing was written
+    there, so tagging an already-enabled, already-working source as
+    "disabled" would be a false alarm an operator can't act on
+    (.chief/_rules/_standard/diagnostics.md). A SAML source never has the
+    secret problem (SAMLSourceRequest needs no secret) and is always enabled.
+    `pre_authentication_flow` is the CLI-supplied **slug**; preconditions
+    already confirmed it resolves before this ever runs *when a SAML IdP is
+    present*, but SAMLSourceRequest itself rejects a slug outright (confirmed
+    live -- same "not a valid UUID" behaviour as OAuth2Provider's flow
+    fields), so it is resolved to a pk lazily, at most once, only when a SAML
+    IdP is actually about to be written -- an unused/bogus flag on a realm
+    with no SAML IdP must stay harmless, since preconditions never validated
+    it in that case. Keycloak IdP mappers are read once per provider and
+    reported as unmapped type idp_mapper, unconditionally, same as
+    migrate_clients' client-role read.
+    """
+    results: list[EntityResult] = []
+    secrets = secrets or {}
+    # Resolved lazily, at most once per run, only when a SAML IdP is
+    # actually about to be written -- not eagerly at the top. A bogus
+    # --pre-authentication-flow with no SAML IdP in scope must stay harmless
+    # (preconditions only validate the flag when one is present), so calling
+    # AuthentikClient.get_flow_pk unconditionally here would 500 on
+    # `results[0]` for a flow that was never going to be used.
+    pre_auth_flow_pk_cache: list[str] = []
+
+    def _pre_auth_flow_pk() -> str:
+        assert pre_authentication_flow is not None
+        if not pre_auth_flow_pk_cache:
+            pre_auth_flow_pk_cache.append(ak.get_flow_pk(pre_authentication_flow))
+        return pre_auth_flow_pk_cache[0]
+
+    for kc_idp in kc.get_identity_providers(realm):
+        alias = kc_idp["alias"]
+        provider_id = kc_idp["providerId"]
+        kc_id = kc_idp.get("internalId") or alias
+        unmapped = unmapped_idp_mappers(kc.get_idp_mappers(realm, alias))
+        kind = source_kind(provider_id)
+
+        if kind is None:
+            unmapped.append(
+                {
+                    "type": IDP_TYPE_UNSUPPORTED,
+                    "name": provider_id,
+                    "why": "no authentik source equivalent",
+                }
+            )
+            results.append(
+                EntityResult("idp", kc_id, alias, None, CONFLICT, IDP_TYPE_UNSUPPORTED, unmapped)
+            )
+            continue
+
+        secret = resolved_secret(alias, secrets) if kind == "oauth" else None
+        # Only meaningful on a branch that actually writes (or would write)
+        # the source: a SKIPPED match touches nothing, so tagging it would
+        # tell an operator their already-enabled, already-working source is
+        # "created disabled" -- wrong, and exactly the kind of noise that
+        # teaches operators to ignore `unmapped` (.chief/_rules/_standard/diagnostics.md).
+        write_unmapped = unmapped + (
+            [{"type": IDP_SECRET_MISSING, "name": alias, "why": "no secret supplied"}]
+            if kind == "oauth" and secret is None
+            else []
+        )
+
+        try:
+            existing = ak.find_source_by_slug(slugify(alias))
+
+            if existing is not None:
+                if not update_existing:
+                    results.append(
+                        EntityResult(
+                            "idp", kc_id, alias, existing["pk"], SKIPPED, unmapped=unmapped
+                        )
+                    )
+                    continue
+                if not apply:
+                    results.append(
+                        EntityResult(
+                            "idp", kc_id, alias, existing["pk"], UPDATED, unmapped=write_unmapped
+                        )
+                    )
+                    continue
+                if kind == "oauth":
+                    payload = map_oauth_source(kc_idp, secret=secret)
+                    update_response = ak.update_oauth_source(payload["slug"], payload)
+                else:
+                    pre_auth_flow_pk = _pre_auth_flow_pk()
+                    payload = map_saml_source(
+                        kc_idp,
+                        pre_authentication_flow=pre_auth_flow_pk,
+                        signing_kp=_saml_signing_kp(ak, kc_idp),
+                    )
+                    update_response = ak.update_saml_source(payload["slug"], payload)
+                if update_response.status_code >= 400:
+                    results.append(EntityResult("idp", kc_id, alias, None, FAILED, API_REJECTED))
+                else:
+                    results.append(
+                        EntityResult(
+                            "idp", kc_id, alias, existing["pk"], UPDATED, unmapped=write_unmapped
+                        )
+                    )
+                continue
+
+            if not apply:
+                results.append(
+                    EntityResult("idp", kc_id, alias, None, CREATED, unmapped=write_unmapped)
+                )
+                continue
+
+            if kind == "oauth":
+                payload = map_oauth_source(kc_idp, secret=secret)
+                create_response = ak.create_oauth_source(payload)
+            else:
+                pre_auth_flow_pk = _pre_auth_flow_pk()
+                payload = map_saml_source(
+                    kc_idp,
+                    pre_authentication_flow=pre_auth_flow_pk,
+                    signing_kp=_saml_signing_kp(ak, kc_idp),
+                )
+                create_response = ak.create_saml_source(payload)
+            if create_response.status_code >= 400:
+                results.append(EntityResult("idp", kc_id, alias, None, FAILED, API_REJECTED))
+                continue
+            created = create_response.json()
+            results.append(
+                EntityResult("idp", kc_id, alias, created["pk"], CREATED, unmapped=write_unmapped)
+            )
+        except httpx.HTTPError:
+            results.append(EntityResult("idp", kc_id, alias, None, FAILED, API_REJECTED))
+
+    return results
 
 
 def migrate_groups(

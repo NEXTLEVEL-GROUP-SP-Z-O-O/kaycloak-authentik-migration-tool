@@ -6,6 +6,16 @@ services:
       KEYCLOAK_ADMIN: ${KC_REALM_ADMIN:-admin}
       KEYCLOAK_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:-admin}
       JAVA_OPTS_APPEND: "-Xms128m -Xmx384m -XX:MaxMetaspaceSize=128m"
+      # Fixes the issuer Keycloak reports/expects to this one value
+      # regardless of which Host header a request arrives with. Needed for
+      # task-4's live login check: the browser reaches Keycloak via
+      # localhost:8081 (the authorization redirect) while authentik-server's
+      # backchannel token/userinfo calls reach it via keycloak:8080 (the
+      # container network) -- without a fixed hostname, Keycloak 25 rejects
+      # the backchannel call with "Invalid token issuer" because the
+      # request's own Host header doesn't match the token's issuer from the
+      # browser-facing request. Confirmed live.
+      KC_HOSTNAME: "http://localhost:8081"
     ports:
       - "8081:8080"
     volumes:
