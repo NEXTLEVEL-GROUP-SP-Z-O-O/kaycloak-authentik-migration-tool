@@ -32,6 +32,7 @@ from kc2ak.mappers.idps import (
     DEFAULT_USER_MATCHING_MODE,
     FEDERATED_LINK_SOURCE_MISSING,
     FEDERATED_LINK_UNWRITABLE,
+    IDP_FLOW_MISSING,
     IDP_SECRET_MISSING,
     IDP_TYPE_UNSUPPORTED,
     map_oauth_source,
@@ -122,6 +123,8 @@ def migrate_idps(
     secrets: dict[str, str] | None = None,
     pre_authentication_flow: str | None = None,
     user_matching_mode: str = DEFAULT_USER_MATCHING_MODE,
+    authentication_flow: str | None = None,
+    enrollment_flow: str | None = None,
 ) -> list[EntityResult]:
     """One entity per Keycloak identity provider, matched against an
     authentik source by natural key (source `slug` <- IdP `alias`,
@@ -167,6 +170,14 @@ def migrate_idps(
     .chief/milestone-2/_contract/02-idp-mapping.md. migrate_federated_links
     reports, per source, how many Keycloak users depend on this matching
     mode working instead of writing anything.
+
+    `authentication_flow`/`enrollment_flow` are the CLI-supplied **slugs**
+    for --authentication-flow/--enrollment-flow, optional unlike
+    `pre_authentication_flow`: an OAuth source can be created without them
+    (authentik's own OAuthSourceRequest does not require them), so a missing
+    one means the source is written disabled with an idp_flow_missing
+    unmapped entry, not a precondition failure
+    (.chief/milestone-2/_contract/02-idp-mapping.md's task-5b amendment).
     """
     results: list[EntityResult] = []
     secrets = secrets or {}
@@ -183,6 +194,27 @@ def migrate_idps(
         if not pre_auth_flow_pk_cache:
             pre_auth_flow_pk_cache.append(ak.get_flow_pk(pre_authentication_flow))
         return pre_auth_flow_pk_cache[0]
+
+    # Same lazy-resolve-once pattern, but each is only ever resolved if the
+    # operator actually supplied it -- neither flag requires an OAuth IdP to
+    # be present, so an unsupplied one must stay `None` all the way through
+    # rather than triggering a resolution that was never asked for.
+    auth_flow_pk_cache: list[str] = []
+    enrollment_flow_pk_cache: list[str] = []
+
+    def _auth_flow_pk() -> str | None:
+        if authentication_flow is None:
+            return None
+        if not auth_flow_pk_cache:
+            auth_flow_pk_cache.append(ak.get_flow_pk(authentication_flow))
+        return auth_flow_pk_cache[0]
+
+    def _enrollment_flow_pk() -> str | None:
+        if enrollment_flow is None:
+            return None
+        if not enrollment_flow_pk_cache:
+            enrollment_flow_pk_cache.append(ak.get_flow_pk(enrollment_flow))
+        return enrollment_flow_pk_cache[0]
 
     for kc_idp in kc.get_identity_providers(realm):
         alias = kc_idp["alias"]
@@ -210,10 +242,36 @@ def migrate_idps(
         # tell an operator their already-enabled, already-working source is
         # "created disabled" -- wrong, and exactly the kind of noise that
         # teaches operators to ignore `unmapped` (.chief/_rules/_standard/diagnostics.md).
-        write_unmapped = unmapped + (
-            [{"type": IDP_SECRET_MISSING, "name": alias, "why": "no secret supplied"}]
-            if kind == "oauth" and secret is None
-            else []
+        # Computed from the flags themselves, not from a resolved pk -- this
+        # must be identical on a dry run and an applied one (same fidelity
+        # rule as idp_secret_missing), and dry-run branches below never
+        # resolve a flow slug to a pk at all.
+        missing_flows = [
+            name
+            for name, value in (
+                ("authentication_flow", authentication_flow),
+                ("enrollment_flow", enrollment_flow),
+            )
+            if value is None
+        ]
+        write_unmapped = (
+            unmapped
+            + (
+                [{"type": IDP_SECRET_MISSING, "name": alias, "why": "no secret supplied"}]
+                if kind == "oauth" and secret is None
+                else []
+            )
+            + (
+                [
+                    {
+                        "type": IDP_FLOW_MISSING,
+                        "name": alias,
+                        "why": f"{' and '.join(missing_flows)} not supplied",
+                    }
+                ]
+                if kind == "oauth" and missing_flows
+                else []
+            )
         )
 
         try:
@@ -236,7 +294,11 @@ def migrate_idps(
                     continue
                 if kind == "oauth":
                     payload = map_oauth_source(
-                        kc_idp, secret=secret, user_matching_mode=user_matching_mode
+                        kc_idp,
+                        secret=secret,
+                        user_matching_mode=user_matching_mode,
+                        authentication_flow=_auth_flow_pk(),
+                        enrollment_flow=_enrollment_flow_pk(),
                     )
                     update_response = ak.update_oauth_source(payload["slug"], payload)
                 else:
@@ -266,7 +328,11 @@ def migrate_idps(
 
             if kind == "oauth":
                 payload = map_oauth_source(
-                    kc_idp, secret=secret, user_matching_mode=user_matching_mode
+                    kc_idp,
+                    secret=secret,
+                    user_matching_mode=user_matching_mode,
+                    authentication_flow=_auth_flow_pk(),
+                    enrollment_flow=_enrollment_flow_pk(),
                 )
                 create_response = ak.create_oauth_source(payload)
             else:

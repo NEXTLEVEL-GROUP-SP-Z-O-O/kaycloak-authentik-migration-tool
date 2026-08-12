@@ -11,6 +11,7 @@ from __future__ import annotations
 from kc2ak.authentik_client import AuthentikAuthError, AuthentikClient
 from kc2ak.errors import PreconditionError
 from kc2ak.keycloak_client import KeycloakAuthError, KeycloakClient
+from kc2ak.mappers.idps import source_kind
 
 
 def check_preconditions(
@@ -25,6 +26,8 @@ def check_preconditions(
     idps_in_scope: bool = False,
     realm: str = "",
     pre_authentication_flow: str | None = None,
+    authentication_flow: str | None = None,
+    enrollment_flow: str | None = None,
 ) -> None:
     """Run every precondition, raising PreconditionError on the first
     failure. Nothing is written to Authentik before or during this call.
@@ -67,6 +70,22 @@ def check_preconditions(
             raise PreconditionError(
                 f"pre-authentication flow {pre_authentication_flow!r} does not exist"
             )
+
+    if idps_in_scope and any(
+        source_kind(idp["providerId"]) == "oauth" for idp in kc_client.get_identity_providers(realm)
+    ):
+        # Unlike --pre-authentication-flow, --authentication-flow/
+        # --enrollment-flow are optional: an OAuth source can be created
+        # without them (OAuthSourceRequest does not require them), it is
+        # just written disabled -- .chief/milestone-2/_contract/02-idp-mapping.md's
+        # task-5b amendment. So there is nothing to check when the operator
+        # never supplied one; a *supplied* slug that doesn't resolve is
+        # still an exit-2 precondition failure, the same as every other flow
+        # flag in this contract.
+        if authentication_flow and not ak_client.flow_exists(authentication_flow):
+            raise PreconditionError(f"authentication flow {authentication_flow!r} does not exist")
+        if enrollment_flow and not ak_client.flow_exists(enrollment_flow):
+            raise PreconditionError(f"enrollment flow {enrollment_flow!r} does not exist")
 
     if send_recovery_email:
         assert email_stage is not None

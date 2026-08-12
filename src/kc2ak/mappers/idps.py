@@ -12,6 +12,7 @@ from kc2ak.mappers.clients import slugify
 
 IDP_TYPE_UNSUPPORTED = "idp_type_unsupported"
 IDP_SECRET_MISSING = "idp_secret_missing"
+IDP_FLOW_MISSING = "idp_flow_missing"
 IDP_MAPPER = "idp_mapper"
 FEDERATED_LINK_SOURCE_MISSING = "federated_link_source_missing"
 FEDERATED_LINK_UNWRITABLE = "federated_link_unwritable"
@@ -94,12 +95,13 @@ def map_oauth_source(
     *,
     secret: str | None,
     user_matching_mode: str = DEFAULT_USER_MATCHING_MODE,
+    authentication_flow: str | None = None,
+    enrollment_flow: str | None = None,
 ) -> dict[str, Any]:
     """Map an OAuth-family Keycloak IdP (oidc/keycloak-oidc or a whitelisted
     social provider) to an authentik OAuthSource create/update payload.
     `secret` is the real value from the secrets file, or None -- a None here
-    writes PLACEHOLDER_SECRET and `enabled: false`
-    (.chief/milestone-2/_contract/02-idp-mapping.md's enabled/disabled rule).
+    writes PLACEHOLDER_SECRET.
     URL fields are only set when Keycloak's config has them: a whitelisted
     social provider's config typically doesn't (authentik already knows its
     own endpoints for a known provider_type), while generic "openidconnect"
@@ -112,6 +114,16 @@ def map_oauth_source(
     invented endpoints. `user_matching_mode` is what stands in for the
     per-user federated links this tool cannot write -- see the "Federated
     identity links" amendment.
+
+    `authentication_flow`/`enrollment_flow` are the CLI-supplied
+    --authentication-flow/--enrollment-flow flows' resolved **pks** (or None
+    when not supplied). `enabled` requires a real secret **and** both flows --
+    a source missing either one presents a login button that fails mid-flow
+    with an error the end user cannot act on, the same reasoning
+    .chief/milestone-2/_goal/02-identity-providers.md's opening section
+    already applies to the missing-secret case (task-5b amendment to
+    .chief/milestone-2/_contract/02-idp-mapping.md: a real login 400s
+    "Configured flow does not exist" without them, confirmed live).
     """
     alias = kc_idp["alias"]
     config = kc_idp.get("config") or {}
@@ -121,7 +133,9 @@ def map_oauth_source(
         "provider_type": _OAUTH_PROVIDER_TYPES[kc_idp["providerId"]],
         "consumer_key": config.get("clientId", ""),
         "consumer_secret": secret if secret is not None else PLACEHOLDER_SECRET,
-        "enabled": secret is not None,
+        "enabled": secret is not None
+        and authentication_flow is not None
+        and enrollment_flow is not None,
         "user_matching_mode": user_matching_mode,
     }
     if config.get("authorizationUrl"):
@@ -132,6 +146,10 @@ def map_oauth_source(
         payload["profile_url"] = config["userInfoUrl"]
     if config.get("issuer"):
         payload["oidc_well_known_url"] = config["issuer"]
+    if authentication_flow is not None:
+        payload["authentication_flow"] = authentication_flow
+    if enrollment_flow is not None:
+        payload["enrollment_flow"] = enrollment_flow
     return payload
 
 

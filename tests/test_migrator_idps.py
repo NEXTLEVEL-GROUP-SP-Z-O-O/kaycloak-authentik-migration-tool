@@ -15,7 +15,12 @@ import httpx
 
 from kc2ak.authentik_client import AuthentikClient
 from kc2ak.keycloak_client import KeycloakClient
-from kc2ak.mappers.idps import IDP_SECRET_MISSING, IDP_TYPE_UNSUPPORTED, MASKED_SECRET
+from kc2ak.mappers.idps import (
+    IDP_FLOW_MISSING,
+    IDP_SECRET_MISSING,
+    IDP_TYPE_UNSUPPORTED,
+    MASKED_SECRET,
+)
 from kc2ak.migrator import (
     API_REJECTED,
     CONFLICT,
@@ -30,6 +35,10 @@ FIXTURES = Path(__file__).parent / "fixtures"
 REALM = "kc2ak-test"
 FLOW_SLUG = "pre-auth-flow"
 FLOW_PK = "44444444-0000-0000-0000-000000000001"
+AUTH_FLOW_SLUG = "auth-flow"
+AUTH_FLOW_PK = "44444444-0000-0000-0000-000000000002"
+ENROLL_FLOW_SLUG = "enroll-flow"
+ENROLL_FLOW_PK = "44444444-0000-0000-0000-000000000003"
 
 
 def _load(name: str) -> Any:
@@ -81,7 +90,11 @@ class FakeAuthentikSources:
     def __init__(self) -> None:
         self.sources: dict[str, dict[str, Any]] = {}  # slug -> record
         self.keypairs: dict[str, dict[str, Any]] = {}  # name -> record
-        self.flows = {FLOW_SLUG: FLOW_PK}
+        self.flows = {
+            FLOW_SLUG: FLOW_PK,
+            AUTH_FLOW_SLUG: AUTH_FLOW_PK,
+            ENROLL_FLOW_SLUG: ENROLL_FLOW_PK,
+        }
         self._seq = 0
         self.create_oauth_calls = 0
         self.create_saml_calls = 0
@@ -190,16 +203,54 @@ def test_oauth_provider_created_with_secret_supplied() -> None:
     idps = [i for i in _idps_fixture() if i["alias"] == "corporate-sso"]
     kc = _kc_client(idps)
     results = migrate_idps(
-        kc, _ak_client(fake), REALM, apply=True, secrets={"corporate-sso": "the-real-secret"}
+        kc,
+        _ak_client(fake),
+        REALM,
+        apply=True,
+        secrets={"corporate-sso": "the-real-secret"},
+        authentication_flow=AUTH_FLOW_SLUG,
+        enrollment_flow=ENROLL_FLOW_SLUG,
     )
     assert len(results) == 1
     result = results[0]
     assert result.outcome == CREATED
     assert not any(u["type"] == IDP_SECRET_MISSING for u in result.unmapped)
+    assert not any(u["type"] == IDP_FLOW_MISSING for u in result.unmapped)
     created = fake.sources["corporate-sso"]
     assert created["enabled"] is True
     assert created["consumer_secret"] == "the-real-secret"
     assert created["provider_type"] == "openidconnect"
+    assert created["authentication_flow"] == AUTH_FLOW_PK
+    assert created["enrollment_flow"] == ENROLL_FLOW_PK
+
+
+def test_oauth_provider_created_disabled_without_flows_even_with_secret() -> None:
+    # task-5b: authentication_flow/enrollment_flow are optional flags, but
+    # their absence still disables the source -- same user-visible failure
+    # class as a missing secret (.chief/milestone-2/_goal/02-identity-providers.md).
+    fake = FakeAuthentikSources()
+    idps = [i for i in _idps_fixture() if i["alias"] == "corporate-sso"]
+    kc = _kc_client(idps)
+    results = migrate_idps(
+        kc, _ak_client(fake), REALM, apply=True, secrets={"corporate-sso": "the-real-secret"}
+    )
+    assert results[0].outcome == CREATED
+    assert not any(u["type"] == IDP_SECRET_MISSING for u in results[0].unmapped)
+    assert any(u["type"] == IDP_FLOW_MISSING for u in results[0].unmapped)
+    created = fake.sources["corporate-sso"]
+    assert created["enabled"] is False
+
+
+def test_oauth_provider_flow_missing_reported_the_same_on_a_dry_run() -> None:
+    fake = FakeAuthentikSources()
+    idps = [i for i in _idps_fixture() if i["alias"] == "corporate-sso"]
+    kc = _kc_client(idps)
+    results = migrate_idps(
+        kc, _ak_client(fake), REALM, apply=False, secrets={"corporate-sso": "the-real-secret"}
+    )
+    assert results[0].outcome == CREATED
+    assert any(u["type"] == IDP_FLOW_MISSING for u in results[0].unmapped)
+    assert fake.create_oauth_calls == 0
 
 
 def test_saml_provider_created_with_signing_kp_from_real_certificate() -> None:

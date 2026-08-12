@@ -24,6 +24,11 @@ runner = CliRunner()
 REALM = "x"
 FLOW_SLUG = "pre-auth-flow"
 FLOW_PK = "33333333-0000-0000-0000-000000000009"
+AUTH_FLOW_SLUG = "auth-flow"
+AUTH_FLOW_PK = "33333333-0000-0000-0000-00000000000a"
+ENROLL_FLOW_SLUG = "enroll-flow"
+ENROLL_FLOW_PK = "33333333-0000-0000-0000-00000000000b"
+_FLOWS = {FLOW_SLUG: FLOW_PK, AUTH_FLOW_SLUG: AUTH_FLOW_PK, ENROLL_FLOW_SLUG: ENROLL_FLOW_PK}
 
 CORPORATE_SSO = {
     "alias": "corporate-sso",
@@ -66,7 +71,8 @@ def _ak_handler(request: httpx.Request, *, created: list[dict[str, Any]]) -> htt
         return httpx.Response(200, json={"user": {"username": "akadmin"}})
     if path == "/api/v3/flows/instances/" and method == "GET":
         slug = request.url.params.get("slug")
-        results = [{"pk": FLOW_PK, "slug": FLOW_SLUG}] if slug == FLOW_SLUG else []
+        pk = _FLOWS.get(slug or "")
+        results = [{"pk": pk, "slug": slug}] if pk else []
         return httpx.Response(200, json={"results": results})
     if path == "/api/v3/sources/all/" and method == "GET":
         return httpx.Response(200, json={"results": []})
@@ -191,6 +197,74 @@ def test_missing_pre_authentication_flow_with_saml_in_scope_is_exit_2(
     assert result.exit_code == 2
 
 
+# --- --authentication-flow / --enrollment-flow: optional, unlike --pre-authentication-flow ---
+
+
+def test_authentication_and_enrollment_flow_unsupplied_is_not_a_precondition_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Unlike --pre-authentication-flow (required, hard exit 2 when a SAML IdP
+    # is in scope), these are optional: an OAuth IdP in scope with neither
+    # flag must still run clean -- the source is just created disabled
+    # (task-5b amendment to .chief/milestone-2/_contract/02-idp-mapping.md).
+    _set_env(monkeypatch)
+    _patch_clients(monkeypatch, idps=[CORPORATE_SSO])
+    result = _run("--apply", "--only", "idps", report_path=tmp_path / "r.json")
+    assert result.exit_code != 2
+
+
+def test_bogus_authentication_flow_with_oauth_idp_in_scope_is_exit_2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _set_env(monkeypatch)
+    _patch_clients(monkeypatch, idps=[CORPORATE_SSO])
+    result = _run(
+        "--apply",
+        "--only",
+        "idps",
+        "--authentication-flow",
+        "this-flow-does-not-exist",
+        report_path=tmp_path / "r.json",
+    )
+    assert result.exit_code == 2
+
+
+def test_bogus_enrollment_flow_with_oauth_idp_in_scope_is_exit_2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _set_env(monkeypatch)
+    _patch_clients(monkeypatch, idps=[CORPORATE_SSO])
+    result = _run(
+        "--apply",
+        "--only",
+        "idps",
+        "--enrollment-flow",
+        "this-flow-does-not-exist",
+        report_path=tmp_path / "r.json",
+    )
+    assert result.exit_code == 2
+
+
+def test_bogus_authentication_flow_is_harmless_without_an_oauth_idp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Same "unused flag stays harmless" principle already established for
+    # --pre-authentication-flow with no SAML IdP in scope.
+    _set_env(monkeypatch)
+    _patch_clients(monkeypatch, idps=[CORPORATE_SAML])
+    result = _run(
+        "--apply",
+        "--only",
+        "idps",
+        "--authentication-flow",
+        "this-flow-does-not-exist",
+        "--pre-authentication-flow",
+        FLOW_SLUG,
+        report_path=tmp_path / "r.json",
+    )
+    assert result.exit_code != 2
+
+
 # --- the unconditional "created disabled" stdout line -------------------------
 
 
@@ -223,9 +297,59 @@ def test_disabled_line_absent_when_secret_supplied(
         "idps",
         "--idp-secrets",
         str(secrets_path),
+        "--authentication-flow",
+        AUTH_FLOW_SLUG,
+        "--enrollment-flow",
+        ENROLL_FLOW_SLUG,
         report_path=tmp_path / "r.json",
     )
     assert "created disabled" not in result.output
+
+
+# --- the flow-missing stdout line (task-5b) ------------------------------------
+
+
+def test_flow_missing_line_printed_even_with_a_working_secret(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _set_env(monkeypatch)
+    _patch_clients(monkeypatch, idps=[CORPORATE_SSO])
+    secrets_path = tmp_path / "secrets.json"
+    secrets_path.write_text(json.dumps({"corporate-sso": "the-real-secret"}))
+    secrets_path.chmod(0o600)
+    result = _run(
+        "--apply",
+        "--only",
+        "idps",
+        "--idp-secrets",
+        str(secrets_path),
+        report_path=tmp_path / "r.json",
+    )
+    assert "no secret supplied" not in result.output
+    assert "authentication/enrollment flow not supplied" in result.output
+
+
+def test_flow_missing_line_absent_when_both_flows_supplied(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _set_env(monkeypatch)
+    _patch_clients(monkeypatch, idps=[CORPORATE_SSO])
+    secrets_path = tmp_path / "secrets.json"
+    secrets_path.write_text(json.dumps({"corporate-sso": "the-real-secret"}))
+    secrets_path.chmod(0o600)
+    result = _run(
+        "--apply",
+        "--only",
+        "idps",
+        "--idp-secrets",
+        str(secrets_path),
+        "--authentication-flow",
+        AUTH_FLOW_SLUG,
+        "--enrollment-flow",
+        ENROLL_FLOW_SLUG,
+        report_path=tmp_path / "r.json",
+    )
+    assert "flow not supplied" not in result.output
 
 
 # --- no secret ever reaches the report or stdout ------------------------------

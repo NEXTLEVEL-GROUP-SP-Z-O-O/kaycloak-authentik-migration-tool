@@ -23,7 +23,12 @@ from kc2ak.config import Config
 from kc2ak.errors import PreconditionError, UsageError
 from kc2ak.idp_secrets import read_idp_secrets
 from kc2ak.keycloak_client import KeycloakClient
-from kc2ak.mappers.idps import DEFAULT_USER_MATCHING_MODE, IDP_SECRET_MISSING, USER_MATCHING_MODES
+from kc2ak.mappers.idps import (
+    DEFAULT_USER_MATCHING_MODE,
+    IDP_FLOW_MISSING,
+    IDP_SECRET_MISSING,
+    USER_MATCHING_MODES,
+)
 from kc2ak.migrator import (
     CONFLICT,
     CREATED,
@@ -146,6 +151,16 @@ def migrate(
     pre_authentication_flow: str | None = typer.Option(
         None, "--pre-authentication-flow", help="Flow assigned to every created SAML source"
     ),
+    authentication_flow: str | None = typer.Option(
+        None,
+        "--authentication-flow",
+        help="Flow an OAuth source uses to log in a recognised user. Disabled without it",
+    ),
+    enrollment_flow: str | None = typer.Option(
+        None,
+        "--enrollment-flow",
+        help="Flow an OAuth source uses to enroll a new user. Source created disabled without it",
+    ),
     idp_user_matching: str = typer.Option(
         DEFAULT_USER_MATCHING_MODE,
         "--idp-user-matching",
@@ -225,6 +240,8 @@ def migrate(
                 idps_in_scope=idps_in_scope,
                 realm=realm,
                 pre_authentication_flow=pre_authentication_flow,
+                authentication_flow=authentication_flow,
+                enrollment_flow=enrollment_flow,
             )
         except PreconditionError as exc:
             typer.echo(f"error: {exc}", err=True)
@@ -290,6 +307,8 @@ def migrate(
                 secrets=idp_secrets_map,
                 pre_authentication_flow=pre_authentication_flow,
                 user_matching_mode=idp_user_matching,
+                authentication_flow=authentication_flow,
+                enrollment_flow=enrollment_flow,
             )
         if need_groups:
             group_results, ok_groups, group_pks, group_members = migrate_groups(
@@ -367,6 +386,13 @@ def migrate(
                 and r.outcome == CREATED
                 and any(u["type"] == IDP_SECRET_MISSING for u in r.unmapped)
             )
+            flow_missing_count = sum(
+                1
+                for r in idp_results
+                if r.kind == "idp"
+                and r.outcome == CREATED
+                and any(u["type"] == IDP_FLOW_MISSING for u in r.unmapped)
+            )
             if disabled_count:
                 # Unconditional on --apply, same as the recovery-mail line --
                 # a dry run must show this too, or it promises a plan it
@@ -374,6 +400,15 @@ def migrate(
                 # (.chief/milestone-2/_contract/03-cli-and-report-extensions.md).
                 typer.echo(
                     f"{disabled_count} identity providers created disabled — no secret supplied"
+                )
+            if flow_missing_count:
+                # Same unconditional-on-apply rule, same reasoning, distinct
+                # cause (task-5b): a source can be disabled even with a
+                # working secret if --authentication-flow/--enrollment-flow
+                # were never supplied.
+                typer.echo(
+                    f"{flow_missing_count} identity providers created disabled — "
+                    "authentication/enrollment flow not supplied"
                 )
         if "groups" in scope:
             typer.echo(_count_line("groups", group_results, update_existing=update_existing))

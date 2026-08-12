@@ -93,19 +93,35 @@ def test_resolved_secret_absent_when_masked_placeholder_pasted() -> None:
 # --- map_oauth_source ---------------------------------------------------------
 
 
-def test_map_oauth_source_enabled_with_secret() -> None:
+def test_map_oauth_source_enabled_with_secret_and_flows() -> None:
     idp = _idps()["corporate-sso"]
-    payload = map_oauth_source(idp, secret="the-real-secret")
+    payload = map_oauth_source(
+        idp, secret="the-real-secret", authentication_flow="auth-pk", enrollment_flow="enroll-pk"
+    )
     assert payload["name"] == "corporate-sso"
     assert payload["slug"] == "corporate-sso"
     assert payload["provider_type"] == "openidconnect"
     assert payload["consumer_key"] == "kc2ak-test-oidc-client"
     assert payload["consumer_secret"] == "the-real-secret"
     assert payload["enabled"] is True
+    assert payload["authentication_flow"] == "auth-pk"
+    assert payload["enrollment_flow"] == "enroll-pk"
     assert payload["authorization_url"] == idp["config"]["authorizationUrl"]
     assert payload["access_token_url"] == idp["config"]["tokenUrl"]
     assert payload["profile_url"] == idp["config"]["userInfoUrl"]
     assert "oidc_well_known_url" not in payload  # no `issuer` in this fixture
+
+
+def test_map_oauth_source_disabled_when_flows_missing_even_with_secret() -> None:
+    # task-5b: a source without authentication_flow/enrollment_flow is
+    # login-inert (real login 400s "Configured flow does not exist"), the
+    # identical user-visible failure as the missing-secret case -- so
+    # `enabled` requires all three, not just a real secret.
+    idp = _idps()["corporate-sso"]
+    payload = map_oauth_source(idp, secret="the-real-secret")
+    assert payload["enabled"] is False
+    assert "authentication_flow" not in payload
+    assert "enrollment_flow" not in payload
 
 
 def test_map_oauth_source_defaults_user_matching_mode_to_username_link() -> None:
