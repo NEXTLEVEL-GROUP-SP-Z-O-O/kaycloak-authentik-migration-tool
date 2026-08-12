@@ -124,6 +124,41 @@ def test_map_oauth_source_disabled_when_flows_missing_even_with_secret() -> None
     assert "enrollment_flow" not in payload
 
 
+def test_map_oauth_source_create_writes_placeholder_secret_when_missing() -> None:
+    # Unchanged create-path behaviour: a create with no secret still writes
+    # PLACEHOLDER_SECRET, same as always -- only an update omits it.
+    idp = _idps()["corporate-sso"]
+    payload = map_oauth_source(idp, secret=None)
+    assert payload["consumer_secret"] == PLACEHOLDER_SECRET
+    assert payload["enabled"] is False
+
+
+def test_map_oauth_source_update_omits_secret_key_when_missing() -> None:
+    # task-5c: `enabled` isn't the only field that must never be downgraded
+    # by a thinner update -- an --update-existing run without --idp-secrets
+    # must not overwrite a real, working consumer_secret with
+    # PLACEHOLDER_SECRET either. Reviewed and fixed alongside the `enabled`
+    # regression: both are "this run couldn't supply it, so don't touch what
+    # was already there," not two different rules.
+    idp = _idps()["corporate-sso"]
+    payload = map_oauth_source(idp, secret=None, is_update=True)
+    assert "consumer_secret" not in payload
+    assert "enabled" not in payload
+
+
+def test_map_oauth_source_update_writes_real_secret_when_supplied() -> None:
+    idp = _idps()["corporate-sso"]
+    payload = map_oauth_source(
+        idp,
+        secret="the-real-secret",
+        authentication_flow="auth-pk",
+        enrollment_flow="enroll-pk",
+        is_update=True,
+    )
+    assert payload["consumer_secret"] == "the-real-secret"
+    assert payload["enabled"] is True
+
+
 def test_map_oauth_source_defaults_user_matching_mode_to_username_link() -> None:
     idp = _idps()["corporate-sso"]
     payload = map_oauth_source(idp, secret="s")
@@ -183,7 +218,13 @@ def test_pem_certificate_wraps_bare_base64_der() -> None:
 
 def test_map_saml_source_fields() -> None:
     idp = _idps()["corporate-saml"]
-    payload = map_saml_source(idp, pre_authentication_flow="flow-pk", signing_kp="kp-pk")
+    payload = map_saml_source(
+        idp,
+        pre_authentication_flow="flow-pk",
+        signing_kp="kp-pk",
+        authentication_flow="auth-pk",
+        enrollment_flow="enroll-pk",
+    )
     assert payload["name"] == "corporate-saml"
     assert payload["slug"] == "corporate-saml"
     assert payload["sso_url"] == idp["config"]["singleSignOnServiceUrl"]
@@ -191,7 +232,21 @@ def test_map_saml_source_fields() -> None:
     assert payload["issuer"] == idp["config"]["idpEntityId"]
     assert payload["pre_authentication_flow"] == "flow-pk"
     assert payload["signing_kp"] == "kp-pk"
-    assert payload["enabled"] is True  # SAML needs no secret -- always enabled
+    assert payload["authentication_flow"] == "auth-pk"
+    assert payload["enrollment_flow"] == "enroll-pk"
+    assert payload["enabled"] is True
+
+
+def test_map_saml_source_disabled_when_flows_missing() -> None:
+    # task-5c: SAML needs no secret, but is otherwise gated by
+    # authentication_flow/enrollment_flow exactly like OAuth -- shipping
+    # enabled: true unconditionally was the identical login-inert defect
+    # task-5b fixed for OAuth, left standing for SAML.
+    idp = _idps()["corporate-saml"]
+    payload = map_saml_source(idp, pre_authentication_flow="flow-pk", signing_kp=None)
+    assert payload["enabled"] is False
+    assert "authentication_flow" not in payload
+    assert "enrollment_flow" not in payload
 
 
 def test_map_saml_source_omits_signing_kp_when_none() -> None:

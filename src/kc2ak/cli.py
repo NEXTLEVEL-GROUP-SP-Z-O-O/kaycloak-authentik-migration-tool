@@ -154,12 +154,12 @@ def migrate(
     authentication_flow: str | None = typer.Option(
         None,
         "--authentication-flow",
-        help="Flow an OAuth source uses to log in a recognised user. Disabled without it",
+        help="Flow a source uses to log in a recognised user. Disabled without it",
     ),
     enrollment_flow: str | None = typer.Option(
         None,
         "--enrollment-flow",
-        help="Flow an OAuth source uses to enroll a new user. Source created disabled without it",
+        help="Flow a source uses to enroll a new user. Source created disabled without it",
     ),
     idp_user_matching: str = typer.Option(
         DEFAULT_USER_MATCHING_MODE,
@@ -403,9 +403,13 @@ def migrate(
                 )
             if flow_missing_count:
                 # Same unconditional-on-apply rule, same reasoning, distinct
-                # cause (task-5b): a source can be disabled even with a
-                # working secret if --authentication-flow/--enrollment-flow
-                # were never supplied.
+                # cause (task-5b, widened to SAML sources in task-5c): a
+                # source can be disabled even with a working secret (or, for
+                # SAML, no secret needed at all) if
+                # --authentication-flow/--enrollment-flow were never
+                # supplied. CREATED-only, same as disabled_count above --
+                # --update-existing never disables a matched source
+                # (task-5c), so there is nothing analogous to count there.
                 typer.echo(
                     f"{flow_missing_count} identity providers created disabled — "
                     "authentication/enrollment flow not supplied"

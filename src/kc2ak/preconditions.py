@@ -72,16 +72,18 @@ def check_preconditions(
             )
 
     if idps_in_scope and any(
-        source_kind(idp["providerId"]) == "oauth" for idp in kc_client.get_identity_providers(realm)
+        source_kind(idp["providerId"]) is not None
+        for idp in kc_client.get_identity_providers(realm)
     ):
         # Unlike --pre-authentication-flow, --authentication-flow/
-        # --enrollment-flow are optional: an OAuth source can be created
-        # without them (OAuthSourceRequest does not require them), it is
+        # --enrollment-flow are optional: a source (OAuth or SAML, task-5c
+        # widened this to both) can be created without them (neither
+        # OAuthSourceRequest nor SAMLSourceRequest requires them), it is
         # just written disabled -- .chief/milestone-2/_contract/02-idp-mapping.md's
-        # task-5b amendment. So there is nothing to check when the operator
-        # never supplied one; a *supplied* slug that doesn't resolve is
-        # still an exit-2 precondition failure, the same as every other flow
-        # flag in this contract.
+        # task-5b/task-5c amendments. So there is nothing to check when the
+        # operator never supplied one; a *supplied* slug that doesn't
+        # resolve is still an exit-2 precondition failure, the same as every
+        # other flow flag in this contract.
         if authentication_flow and not ak_client.flow_exists(authentication_flow):
             raise PreconditionError(f"authentication flow {authentication_flow!r} does not exist")
         if enrollment_flow and not ak_client.flow_exists(enrollment_flow):

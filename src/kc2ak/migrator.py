@@ -148,7 +148,9 @@ def migrate_idps(
     there, so tagging an already-enabled, already-working source as
     "disabled" would be a false alarm an operator can't act on
     (.chief/_rules/_standard/diagnostics.md). A SAML source never has the
-    secret problem (SAMLSourceRequest needs no secret) and is always enabled.
+    secret problem (SAMLSourceRequest needs no secret), but is otherwise
+    gated by `authentication_flow`/`enrollment_flow` exactly like an OAuth
+    source -- see below (task-5c amendment).
     `pre_authentication_flow` is the CLI-supplied **slug**; preconditions
     already confirmed it resolves before this ever runs *when a SAML IdP is
     present*, but SAMLSourceRequest itself rejects a slug outright (confirmed
@@ -173,11 +175,25 @@ def migrate_idps(
 
     `authentication_flow`/`enrollment_flow` are the CLI-supplied **slugs**
     for --authentication-flow/--enrollment-flow, optional unlike
-    `pre_authentication_flow`: an OAuth source can be created without them
-    (authentik's own OAuthSourceRequest does not require them), so a missing
-    one means the source is written disabled with an idp_flow_missing
-    unmapped entry, not a precondition failure
-    (.chief/milestone-2/_contract/02-idp-mapping.md's task-5b amendment).
+    `pre_authentication_flow`: neither OAuthSourceRequest nor
+    SAMLSourceRequest requires them, so a source of either kind can be
+    created without them -- a missing one means the source is written
+    disabled with an idp_flow_missing unmapped entry, not a precondition
+    failure (.chief/milestone-2/_contract/02-idp-mapping.md's task-5b
+    amendment, widened to SAML in task-5c: `pre_authentication_flow` is a
+    different, SAML-specific stage flow -- its presence never implied these
+    two were set, so a migrated SAML source was shipped `enabled: true`
+    unconditionally until this task).
+
+    On `--update-existing`, `enabled` is never written `false`, and an
+    OAuth source's `consumer_secret` is never overwritten with a placeholder
+    (task-5c, the latter caught alongside the former: the same "this run's
+    inputs are thinner than a previous run's" bug, in the same field-omission
+    shape): a matched source this run can't fully configure (`is_update=True`
+    passed to mappers.idps.map_oauth_source/map_saml_source) keeps whatever
+    its live `enabled`/`consumer_secret` already were, reported via the same
+    idp_flow_missing (or idp_secret_missing) unmapped entry a create would
+    get, rather than being switched off or silently sabotaged.
     """
     results: list[EntityResult] = []
     secrets = secrets or {}
@@ -269,7 +285,7 @@ def migrate_idps(
                         "why": f"{' and '.join(missing_flows)} not supplied",
                     }
                 ]
-                if kind == "oauth" and missing_flows
+                if missing_flows
                 else []
             )
         )
@@ -299,6 +315,7 @@ def migrate_idps(
                         user_matching_mode=user_matching_mode,
                         authentication_flow=_auth_flow_pk(),
                         enrollment_flow=_enrollment_flow_pk(),
+                        is_update=True,
                     )
                     update_response = ak.update_oauth_source(payload["slug"], payload)
                 else:
@@ -308,6 +325,9 @@ def migrate_idps(
                         pre_authentication_flow=pre_auth_flow_pk,
                         signing_kp=_saml_signing_kp(ak, kc_idp),
                         user_matching_mode=user_matching_mode,
+                        authentication_flow=_auth_flow_pk(),
+                        enrollment_flow=_enrollment_flow_pk(),
+                        is_update=True,
                     )
                     update_response = ak.update_saml_source(payload["slug"], payload)
                 if update_response.status_code >= 400:
@@ -342,6 +362,8 @@ def migrate_idps(
                     pre_authentication_flow=pre_auth_flow_pk,
                     signing_kp=_saml_signing_kp(ak, kc_idp),
                     user_matching_mode=user_matching_mode,
+                    authentication_flow=_auth_flow_pk(),
+                    enrollment_flow=_enrollment_flow_pk(),
                 )
                 create_response = ak.create_saml_source(payload)
             if create_response.status_code >= 400:

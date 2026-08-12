@@ -258,16 +258,41 @@ def test_saml_provider_created_with_signing_kp_from_real_certificate() -> None:
     idps = [i for i in _idps_fixture() if i["alias"] == "corporate-saml"]
     kc = _kc_client(idps)
     results = migrate_idps(
-        kc, _ak_client(fake), REALM, apply=True, pre_authentication_flow=FLOW_SLUG
+        kc,
+        _ak_client(fake),
+        REALM,
+        apply=True,
+        pre_authentication_flow=FLOW_SLUG,
+        authentication_flow=AUTH_FLOW_SLUG,
+        enrollment_flow=ENROLL_FLOW_SLUG,
     )
     assert len(results) == 1
     assert results[0].outcome == CREATED
     created = fake.sources["corporate-saml"]
     assert created["enabled"] is True
     assert created["pre_authentication_flow"] == FLOW_PK
+    assert created["authentication_flow"] == AUTH_FLOW_PK
+    assert created["enrollment_flow"] == ENROLL_FLOW_PK
     assert fake.create_keypair_calls == 1
     kp_name = next(iter(fake.keypairs))
     assert created["signing_kp"] == fake.keypairs[kp_name]["pk"]
+
+
+def test_saml_provider_created_disabled_without_flows() -> None:
+    # task-5c: SAML sources get the identical treatment OAuth sources got in
+    # task-5b -- without --authentication-flow/--enrollment-flow, a SAML
+    # source is created disabled with idp_flow_missing, not enabled
+    # unconditionally.
+    fake = FakeAuthentikSources()
+    idps = [i for i in _idps_fixture() if i["alias"] == "corporate-saml"]
+    kc = _kc_client(idps)
+    results = migrate_idps(
+        kc, _ak_client(fake), REALM, apply=True, pre_authentication_flow=FLOW_SLUG
+    )
+    assert results[0].outcome == CREATED
+    assert any(u["type"] == IDP_FLOW_MISSING for u in results[0].unmapped)
+    created = fake.sources["corporate-saml"]
+    assert created["enabled"] is False
 
 
 # --- secret presence / masking ------------------------------------------------
@@ -426,16 +451,19 @@ def test_update_existing_carries_flow_pks_through_the_patch_payload() -> None:
     assert updated["enabled"] is True
 
 
-def test_update_existing_without_flows_disables_a_previously_working_source() -> None:
-    # task-5b: `enabled` is computed from this run's inputs, not read back from
-    # the live source. An --update-existing run that omits the new flags
-    # writes enabled=False onto a source whose flows were already fine --
-    # the same disabled-with-a-reason rule applied consistently, not a new
-    # special case. Flagged in the task-5b report as a decided-but-notable
-    # consequence; the live flow fields themselves are untouched since the
-    # keys are simply absent from the payload (see map_oauth_source).
+def test_update_existing_without_flows_leaves_an_enabled_source_enabled() -> None:
+    # task-5c: this is the regression the earlier (task-5b) behaviour caused
+    # and task-5c fixes -- `enabled` must never be written `false` on an
+    # update. An --update-existing run that omits the new flags must not
+    # switch off an already-working, already-enabled source as a side effect
+    # of this run's inputs being thinner than a previous run's. The source
+    # is left exactly as it was (enabled stays True, live flow fields are
+    # untouched since the payload omits those keys entirely -- see
+    # map_oauth_source's is_update handling), but still reported via
+    # idp_flow_missing so the gap is visible.
     fake = FakeAuthentikSources()
     fake.seed_source("corporate-sso")
+    fake.sources["corporate-sso"]["enabled"] = True
     idps = [i for i in _idps_fixture() if i["alias"] == "corporate-sso"]
     kc = _kc_client(idps)
     results = migrate_idps(
@@ -448,12 +476,63 @@ def test_update_existing_without_flows_disables_a_previously_working_source() ->
     )
     assert results[0].outcome == UPDATED
     updated = fake.sources["corporate-sso"]
-    assert updated["enabled"] is False
-    # the payload omits the flow keys entirely rather than nulling them out
-    # (see map_oauth_source), so a live source's own flow fields are untouched
+    assert updated["enabled"] is True  # untouched, not downgraded to False
     assert "authentication_flow" not in updated
     assert "enrollment_flow" not in updated
     assert any(u["type"] == IDP_FLOW_MISSING for u in results[0].unmapped)
+
+
+def test_update_existing_with_everything_may_enable_a_previously_disabled_source() -> None:
+    # task-5c: the "never false" rule only blocks a downgrade -- an update
+    # that finally supplies everything needed may still enable a source that
+    # was created disabled.
+    fake = FakeAuthentikSources()
+    fake.seed_source("corporate-sso")
+    fake.sources["corporate-sso"]["enabled"] = False
+    idps = [i for i in _idps_fixture() if i["alias"] == "corporate-sso"]
+    kc = _kc_client(idps)
+    results = migrate_idps(
+        kc,
+        _ak_client(fake),
+        REALM,
+        apply=True,
+        update_existing=True,
+        secrets={"corporate-sso": "s"},
+        authentication_flow=AUTH_FLOW_SLUG,
+        enrollment_flow=ENROLL_FLOW_SLUG,
+    )
+    assert results[0].outcome == UPDATED
+    updated = fake.sources["corporate-sso"]
+    assert updated["enabled"] is True
+    assert not any(u["type"] == IDP_FLOW_MISSING for u in results[0].unmapped)
+
+
+def test_update_existing_without_secret_leaves_a_real_secret_untouched() -> None:
+    # task-5c: the same "never downgrade" rule caught here for `enabled` also
+    # applies to `consumer_secret` -- an --update-existing run without
+    # --idp-secrets must not overwrite an already-working source's real
+    # secret with PLACEHOLDER_SECRET, which would silently sabotage a
+    # working source rather than leave it "exactly as it was."
+    fake = FakeAuthentikSources()
+    fake.seed_source("corporate-sso")
+    fake.sources["corporate-sso"]["enabled"] = True
+    fake.sources["corporate-sso"]["consumer_secret"] = "the-real-secret-already-live"
+    idps = [i for i in _idps_fixture() if i["alias"] == "corporate-sso"]
+    kc = _kc_client(idps)
+    results = migrate_idps(
+        kc,
+        _ak_client(fake),
+        REALM,
+        apply=True,
+        update_existing=True,
+        authentication_flow=AUTH_FLOW_SLUG,
+        enrollment_flow=ENROLL_FLOW_SLUG,
+    )
+    assert results[0].outcome == UPDATED
+    updated = fake.sources["corporate-sso"]
+    assert updated["consumer_secret"] == "the-real-secret-already-live"
+    assert updated["enabled"] is True  # flows alone don't re-disable it either
+    assert any(u["type"] == IDP_SECRET_MISSING for u in results[0].unmapped)
 
 
 # --- failure isolation ---------------------------------------------------------

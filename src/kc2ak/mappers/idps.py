@@ -97,11 +97,13 @@ def map_oauth_source(
     user_matching_mode: str = DEFAULT_USER_MATCHING_MODE,
     authentication_flow: str | None = None,
     enrollment_flow: str | None = None,
+    is_update: bool = False,
 ) -> dict[str, Any]:
     """Map an OAuth-family Keycloak IdP (oidc/keycloak-oidc or a whitelisted
     social provider) to an authentik OAuthSource create/update payload.
     `secret` is the real value from the secrets file, or None -- a None here
-    writes PLACEHOLDER_SECRET.
+    writes PLACEHOLDER_SECRET **on a create**; see `is_update` below for how
+    an update differs.
     URL fields are only set when Keycloak's config has them: a whitelisted
     social provider's config typically doesn't (authentik already knows its
     own endpoints for a known provider_type), while generic "openidconnect"
@@ -117,27 +119,42 @@ def map_oauth_source(
 
     `authentication_flow`/`enrollment_flow` are the CLI-supplied
     --authentication-flow/--enrollment-flow flows' resolved **pks** (or None
-    when not supplied). `enabled` requires a real secret **and** both flows --
-    a source missing either one presents a login button that fails mid-flow
+    when not supplied). A source needs a real secret **and** both flows to
+    work -- missing either one presents a login button that fails mid-flow
     with an error the end user cannot act on, the same reasoning
     .chief/milestone-2/_goal/02-identity-providers.md's opening section
     already applies to the missing-secret case (task-5b amendment to
     .chief/milestone-2/_contract/02-idp-mapping.md: a real login 400s
     "Configured flow does not exist" without them, confirmed live).
+
+    `is_update` changes how an incomplete configuration is written, not
+    whether it's incomplete (task-5c amendment): on a create, `enabled` and
+    `consumer_secret` are always in the payload -- a source that can't work
+    is created disabled, with a placeholder secret, by design. On an update,
+    neither key is written when this run cannot supply a real value:
+    `enabled` is only ever written `True`, never `False`, and
+    `consumer_secret` is omitted entirely rather than sent as
+    PLACEHOLDER_SECRET when `secret` is None, so a real secret already
+    stored on the live source is never overwritten with a marker that keeps
+    it from working. Both leave whatever the live source already had
+    untouched. `--update-existing` must never switch off, or silently
+    sabotage, an already-working identity provider as a side effect of this
+    run's inputs being thinner than a previous run's.
     """
     alias = kc_idp["alias"]
     config = kc_idp.get("config") or {}
+    enabled = secret is not None and authentication_flow is not None and enrollment_flow is not None
     payload: dict[str, Any] = {
         "name": alias,
         "slug": slugify(alias),
         "provider_type": _OAUTH_PROVIDER_TYPES[kc_idp["providerId"]],
         "consumer_key": config.get("clientId", ""),
-        "consumer_secret": secret if secret is not None else PLACEHOLDER_SECRET,
-        "enabled": secret is not None
-        and authentication_flow is not None
-        and enrollment_flow is not None,
         "user_matching_mode": user_matching_mode,
     }
+    if secret is not None or not is_update:
+        payload["consumer_secret"] = secret if secret is not None else PLACEHOLDER_SECRET
+    if enabled or not is_update:
+        payload["enabled"] = enabled
     if config.get("authorizationUrl"):
         payload["authorization_url"] = config["authorizationUrl"]
     if config.get("tokenUrl"):
@@ -170,6 +187,9 @@ def map_saml_source(
     pre_authentication_flow: str,
     signing_kp: str | None,
     user_matching_mode: str = DEFAULT_USER_MATCHING_MODE,
+    authentication_flow: str | None = None,
+    enrollment_flow: str | None = None,
+    is_update: bool = False,
 ) -> dict[str, Any]:
     """Map a `saml` Keycloak IdP to an authentik SAMLSource create/update
     payload. `pre_authentication_flow` is the flow's resolved pk, not its
@@ -180,25 +200,40 @@ def map_saml_source(
     require it). `user_matching_mode` is what stands in for the per-user
     federated links this tool cannot write -- see the "Federated identity
     links" amendment.
+
+    `authentication_flow`/`enrollment_flow` (task-5c): the identical base
+    `Source` fields OAuth sources needed to not be login-inert
+    (task-5b) -- `pre_authentication_flow` is a different, SAML-specific
+    stage flow and its presence does not imply these two are set.
+    SAMLSourceRequest needs no secret, so `enabled` here depends only on
+    both being supplied. `is_update` behaves exactly as in
+    `map_oauth_source`: on a create, `enabled` is always written, `True` or
+    `False`; on an update, it is only ever written `True`, and omitted
+    entirely (not sent as `False`) when this run can't fully configure the
+    source, so an update never disables an already-working one.
     """
     alias = kc_idp["alias"]
     config = kc_idp.get("config") or {}
+    enabled = authentication_flow is not None and enrollment_flow is not None
     payload: dict[str, Any] = {
         "name": alias,
         "slug": slugify(alias),
         "sso_url": config.get("singleSignOnServiceUrl", ""),
         "pre_authentication_flow": pre_authentication_flow,
-        # SAMLSourceRequest requires no secret -- unaffected by the
-        # unobtainable-clientSecret problem, so always created working.
-        "enabled": True,
         "user_matching_mode": user_matching_mode,
     }
+    if enabled or not is_update:
+        payload["enabled"] = enabled
     if config.get("singleLogoutServiceUrl"):
         payload["slo_url"] = config["singleLogoutServiceUrl"]
     if config.get("idpEntityId"):
         payload["issuer"] = config["idpEntityId"]
     if signing_kp is not None:
         payload["signing_kp"] = signing_kp
+    if authentication_flow is not None:
+        payload["authentication_flow"] = authentication_flow
+    if enrollment_flow is not None:
+        payload["enrollment_flow"] = enrollment_flow
     return payload
 
 

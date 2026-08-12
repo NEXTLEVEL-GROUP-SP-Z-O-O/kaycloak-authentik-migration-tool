@@ -245,11 +245,12 @@ def test_bogus_enrollment_flow_with_oauth_idp_in_scope_is_exit_2(
     assert result.exit_code == 2
 
 
-def test_bogus_authentication_flow_is_harmless_without_an_oauth_idp(
+def test_bogus_authentication_flow_with_saml_idp_in_scope_is_exit_2(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # Same "unused flag stays harmless" principle already established for
-    # --pre-authentication-flow with no SAML IdP in scope.
+    # task-5c: --authentication-flow/--enrollment-flow now gate SAML sources
+    # too, so a bogus slug with only a SAML IdP in scope must exit 2 exactly
+    # like the OAuth case above -- SAML is no longer exempt.
     _set_env(monkeypatch)
     _patch_clients(monkeypatch, idps=[CORPORATE_SAML])
     result = _run(
@@ -260,6 +261,33 @@ def test_bogus_authentication_flow_is_harmless_without_an_oauth_idp(
         "this-flow-does-not-exist",
         "--pre-authentication-flow",
         FLOW_SLUG,
+        report_path=tmp_path / "r.json",
+    )
+    assert result.exit_code == 2
+
+
+def test_bogus_authentication_flow_is_harmless_without_any_supported_idp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Same "unused flag stays harmless" principle already established for
+    # --pre-authentication-flow with no SAML IdP in scope -- but now that
+    # both OAuth and SAML gate on these flags (task-5c), the flag is only
+    # truly unused when neither kind is present, e.g. an unsupported
+    # provider (CONFLICT / idp_type_unsupported, never becomes a source).
+    _set_env(monkeypatch)
+    unsupported_idp = {
+        "alias": "linkedin-sso",
+        "internalId": "idp-3",
+        "providerId": "linkedin-openid-connect",
+        "config": {},
+    }
+    _patch_clients(monkeypatch, idps=[unsupported_idp])
+    result = _run(
+        "--apply",
+        "--only",
+        "idps",
+        "--authentication-flow",
+        "this-flow-does-not-exist",
         report_path=tmp_path / "r.json",
     )
     assert result.exit_code != 2
