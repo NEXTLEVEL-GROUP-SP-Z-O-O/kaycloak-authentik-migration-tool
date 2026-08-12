@@ -357,6 +357,7 @@ def migrate_roles(
     *,
     apply: bool,
     update_existing: bool = False,
+    planned_group_names: frozenset[str] = frozenset(),
 ) -> tuple[list[EntityResult], dict[str, str], set[str], dict[str, set[int]]]:
     """Returns (results, role_pks, role_conflicted, role_members).
 
@@ -368,6 +369,19 @@ def migrate_roles(
     (mappers.clients.BUILTIN_CLIENT_IDS). A composite role and a name
     collision with a group not of role origin are both CONFLICT and write
     nothing (.chief/milestone-2/_contract/01-role-mapping.md).
+
+    planned_group_names is migrate_groups' ok_groups keys -- every
+    non-nested Keycloak group in this same run, whether it already existed
+    in Authentik or will only be created once --apply runs. Collision
+    detection must include it: groups are processed before roles, so on a
+    first-ever migration a same-named Keycloak group and realm role do not
+    yet collide in live Authentik state during a dry run, but will the
+    moment --apply creates the group. Checking live state alone would let a
+    dry run promise a clean plan that --apply then contradicts -- the same
+    defect milestone 1 fixed for memberships by planning against resolved
+    names instead of authentik pks
+    (.chief/milestone-2/_contract/01-role-mapping.md's "Collision detection
+    must include the same run").
 
     role_pks maps role name -> Authentik group pk, for every role matched or
     (under --apply) newly created -- migrate_role_assignments uses it the
@@ -400,6 +414,18 @@ def migrate_roles(
             results.append(
                 EntityResult(
                     "role", kc_id, name, None, CONFLICT, COMPOSITE_ROLE_UNSUPPORTED, unmapped
+                )
+            )
+            continue
+
+        if name in planned_group_names:
+            # A Keycloak group of the same name is in this same run's group
+            # phase -- it collides whether or not it exists in Authentik
+            # yet, so a dry run must report this before --apply creates it.
+            role_conflicted.add(name)
+            results.append(
+                EntityResult(
+                    "role", kc_id, name, None, CONFLICT, ROLE_NAME_TAKEN_BY_GROUP, unmapped
                 )
             )
             continue

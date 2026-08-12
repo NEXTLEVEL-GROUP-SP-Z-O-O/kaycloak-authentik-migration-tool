@@ -248,7 +248,12 @@ def migrate(
             )
         if need_roles:
             role_results, role_pks, role_conflicted, role_members = migrate_roles(
-                kc_client, ak_client, realm, apply=roles_apply, update_existing=update_existing
+                kc_client,
+                ak_client,
+                realm,
+                apply=roles_apply,
+                update_existing=update_existing,
+                planned_group_names=frozenset(ok_groups),
             )
         if need_users:
             user_results, user_pks, resolved_usernames = migrate_users(

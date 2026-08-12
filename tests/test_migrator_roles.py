@@ -184,6 +184,60 @@ def test_migrate_roles_excludes_builtins_before_the_read_is_counted() -> None:
     assert fake.create_group_calls == 2  # engineering/senior-engineer wrote nothing
 
 
+def test_migrate_roles_dry_run_reports_collision_with_a_group_planned_this_run() -> None:
+    # task-3b regression: on a first-ever migration against an empty
+    # authentik, "engineering" the Keycloak group does not exist in
+    # authentik yet during a dry run -- ak.find_group_by_name alone would
+    # report a clean plan, and the collision would only surface once
+    # --apply creates the group. planned_group_names (migrate_groups'
+    # ok_groups keys) must catch it before that happens
+    # (.chief/milestone-2/_contract/01-role-mapping.md's "Collision
+    # detection must include the same run").
+    kc = _kc_client(roles=_roles_fixture())
+    fake = FakeAuthentikGroups()  # empty -- nothing exists in authentik yet
+
+    results, role_pks, role_conflicted, _role_members = migrate_roles(
+        kc,
+        _ak_client(fake),
+        REALM,
+        apply=False,
+        planned_group_names=frozenset({"engineering", "marketing"}),
+    )
+
+    by_name = {r.keycloak_ref: r for r in results}
+    assert by_name["engineering"].outcome == CONFLICT
+    assert by_name["engineering"].reason == ROLE_NAME_TAKEN_BY_GROUP
+    assert by_name["engineering"].authentik_ref is None
+    assert "engineering" in role_conflicted
+    assert "engineering" not in role_pks
+    assert fake.create_group_calls == 0  # dry run: nothing written
+
+
+def test_migrate_roles_apply_reports_the_same_collision_identically() -> None:
+    # Dry and applied must agree on outcomes -- milestone 1's "identically
+    # shaped reports" rule.
+    kc = _kc_client(roles=_roles_fixture())
+    fake = FakeAuthentikGroups()
+
+    results, role_pks, role_conflicted, _role_members = migrate_roles(
+        kc,
+        _ak_client(fake),
+        REALM,
+        apply=True,
+        planned_group_names=frozenset({"engineering", "marketing"}),
+    )
+
+    by_name = {r.keycloak_ref: r for r in results}
+    assert by_name["engineering"].outcome == CONFLICT
+    assert by_name["engineering"].reason == ROLE_NAME_TAKEN_BY_GROUP
+    assert by_name["engineering"].authentik_ref is None
+    assert "engineering" in role_conflicted
+    assert "engineering" not in role_pks
+    # the collision itself writes nothing even under --apply -- a CONFLICT
+    # is never partially migrated (other roles in the same run still do).
+    assert "engineering" not in fake.groups
+
+
 def test_migrate_roles_dry_run_writes_nothing() -> None:
     kc = _kc_client(roles=_roles_fixture())
     fake = FakeAuthentikGroups()
