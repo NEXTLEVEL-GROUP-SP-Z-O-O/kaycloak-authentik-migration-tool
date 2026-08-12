@@ -5,6 +5,90 @@
   "sslRequired": "none",
   "registrationAllowed": false,
   "duplicateEmailsAllowed": true,
+  "roles": {
+    "realm": [
+      {
+        "name": "employee",
+        "description": "Plain realm role, migrates cleanly to a group",
+        "composite": false
+      },
+      {
+        "name": "code-reviewer",
+        "description": "Plain realm role, constituent of the composite below",
+        "composite": false
+      },
+      {
+        "name": "senior-engineer",
+        "description": "Composite realm role -- must CONFLICT / composite_role_unsupported",
+        "composite": true,
+        "composites": {
+          "realm": [
+            "employee",
+            "code-reviewer"
+          ]
+        }
+      },
+      {
+        "name": "engineering",
+        "description": "Realm role whose name collides with the 'engineering' group -- must CONFLICT / role_name_taken_by_group",
+        "composite": false
+      }
+    ],
+    "client": {
+      "confidential-app": [
+        {
+          "name": "admin",
+          "description": "Client role, same name as internal-tool's 'admin' -- reported unmapped, never migrated"
+        }
+      ],
+      "internal-tool": [
+        {
+          "name": "admin",
+          "description": "Client role, same name as confidential-app's 'admin' -- reported unmapped, never migrated"
+        }
+      ]
+    }
+  },
+  "identityProviders": [
+    {
+      "alias": "corporate-sso",
+      "providerId": "oidc",
+      "enabled": true,
+      "config": {
+        "clientId": "kc2ak-test-oidc-client",
+        "clientSecret": "kc2ak-test-idp-secret",
+        "authorizationUrl": "https://sso.example.com/auth",
+        "tokenUrl": "https://sso.example.com/token",
+        "userInfoUrl": "https://sso.example.com/userinfo",
+        "issuer": "https://sso.example.com",
+        "clientAuthMethod": "client_secret_post",
+        "syncMode": "IMPORT"
+      }
+    },
+    {
+      "alias": "corporate-saml",
+      "providerId": "saml",
+      "enabled": true,
+      "config": {
+        "singleSignOnServiceUrl": "https://saml.example.com/sso",
+        "singleLogoutServiceUrl": "https://saml.example.com/slo",
+        "idpEntityId": "https://saml.example.com/entity",
+        "signingCertificate": "MIIBmzCCAQQCCQCVK6GKI0T2VjANBgkqhkiG9w0BAQsFADARMQ8wDQYDVQQDDAZrYzJhazAeFw0yNTAxMDEwMDAwMDBaFw0zNTAxMDEwMDAwMDBaMBExDzANBgNVBAMMBmtjMmFrMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDNfakethrowawaytestcertificatedataonlyusedtoexerciseSAMLsourceimport1234567890abcdef",
+        "nameIDPolicyFormat": "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent",
+        "syncMode": "IMPORT"
+      }
+    },
+    {
+      "alias": "linkedin-sso",
+      "providerId": "linkedin-openid-connect",
+      "enabled": true,
+      "config": {
+        "clientId": "kc2ak-test-linkedin-client",
+        "clientSecret": "kc2ak-test-linkedin-secret",
+        "syncMode": "IMPORT"
+      }
+    }
+  ],
   "groups": [
     {
       "id": "11111111-0000-0000-0000-000000000001",
@@ -45,7 +129,19 @@
       "firstName": "Alice",
       "lastName": "Jones",
       "enabled": true,
-      "groups": ["/engineering"]
+      "groups": [
+        "/engineering"
+      ],
+      "realmRoles": [
+        "senior-engineer"
+      ],
+      "federatedIdentities": [
+        {
+          "identityProvider": "corporate-sso",
+          "userId": "ext-alice-12345",
+          "userName": "alice@corporate-sso.example.com"
+        }
+      ]
     },
     {
       "id": "22222222-0000-0000-0000-000000000002",
@@ -55,7 +151,12 @@
       "firstName": "Bob",
       "lastName": "Smith",
       "enabled": true,
-      "groups": ["/engineering"]
+      "groups": [
+        "/engineering"
+      ],
+      "realmRoles": [
+        "employee"
+      ]
     },
     {
       "id": "22222222-0000-0000-0000-000000000003",
@@ -65,7 +166,12 @@
       "firstName": "Carol",
       "lastName": "Baker",
       "enabled": true,
-      "groups": ["/marketing"]
+      "groups": [
+        "/marketing"
+      ],
+      "realmRoles": [
+        "engineering"
+      ]
     },
     {
       "id": "22222222-0000-0000-0000-000000000004",
@@ -103,7 +209,9 @@
       "firstName": "Disa",
       "lastName": "Bled",
       "enabled": false,
-      "groups": ["/sales/admins"]
+      "groups": [
+        "/sales/admins"
+      ]
     }
   ],
   "clients": [
@@ -122,7 +230,9 @@
         "https://app.example.com/callback",
         "https://*.example.com/*"
       ],
-      "webOrigins": ["https://app.example.com"],
+      "webOrigins": [
+        "https://app.example.com"
+      ],
       "protocolMappers": [
         {
           "name": "username",
@@ -224,6 +334,24 @@
             "claim.value": "probe-value"
           }
         }
+      ]
+    },
+    {
+      "id": "33333333-0000-0000-0000-000000000002",
+      "clientId": "internal-tool",
+      "name": "Internal Tool",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "kc2ak-test-internal-tool-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "https://internal.example.com/callback"
+      ],
+      "webOrigins": [
+        "https://internal.example.com"
       ]
     }
   ]
