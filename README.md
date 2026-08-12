@@ -138,8 +138,6 @@ Operators will see these on every run and should expect them.
 
 ## Usage
 
-> Not implemented yet — this section will be filled in as the tool is built.
-
 ```bash
 # Preview the migration. Reads only; writes nothing.
 kc2ak migrate --realm myrealm \
@@ -162,6 +160,61 @@ kc2ak migrate --realm myrealm --apply \
 
 One realm per run. Endpoints and credentials for both systems are read from the
 environment.
+
+## API notes
+
+Behaviours of the Keycloak and Authentik APIs that differ from what their
+documentation implies. Each was observed against a running instance while
+building this tool, not inferred from docs or source. Versions are stated because
+these are version-specific observations, not permanent truths.
+
+Useful whether or not you use this tool — each of these cost real debugging time.
+
+**`recovery_email` takes `email_stage` as a query parameter, not a JSON body**
+*(authentik 2024.10.5)*
+`POST /core/users/{id}/recovery_email/?email_stage=<uuid>`. Sending
+`{"email_stage": "<uuid>"}` as a body returns `400 "Email stage does not exist"`
+**even when the stage is real and correct** — the body is ignored, and the absent
+query parameter is what fails. The error names the wrong cause.
+
+**Provider flows take a resolved pk, not a slug** *(authentik 2024.10.5)*
+`authorization_flow` and `invalidation_flow` on `POST /providers/oauth2/` reject a
+flow slug with `400 "not a valid UUID"`. Look the slug up first and send the pk.
+
+**A provider created through the API gets no property mappings at all**
+*(authentik 2024.10.5)*
+Unlike one created in the UI, which receives authentik's managed
+`openid`/`profile`/`email` scope mappings. A migrated client that relied on
+realm-level default client scopes for standard claims will silently issue tokens
+without them unless you attach mappings yourself.
+
+**Scope mappings only run when their scope is requested** *(authentik 2024.10.5)*
+authentik evaluates a scope mapping's expression only if the token request
+includes that `scope_name`. Keycloak's *default* client scopes fire
+unconditionally — a `scope=openid` request still returns
+`granted scope: openid profile email`. Reproducing Keycloak's behaviour therefore
+means putting claims on a scope the client always requests, not on the
+nominally-matching one.
+
+**Same-key list values are concatenated across mappings, not overwritten**
+*(authentik 2024.10.5)*
+Two property mappings both emitting `groups` produce every group **twice** in the
+issued token, rather than one overriding the other.
+
+**`GET /groups` never populates `subGroups`** *(Keycloak 25)*
+The list representation reports nesting only through `subGroupCount`. Code that
+detects nested groups by checking for a non-empty `subGroups` will treat every
+nested group as flat. Older versions do expose `subGroups`, so check both.
+
+**Two protocol mapper types have no `claim.name`** *(Keycloak 25)*
+`oidc-audience-mapper` and `oidc-full-name-mapper` have no `claim.name` config
+property at all — confirmed against `GET /admin/serverinfo`'s
+`protocolMapperTypes`. Their claim keys are the literals `aud` and `name`.
+
+**Script-based protocol mappers are not registered by default** *(Keycloak 25)*
+`oidc-script-based-protocol-mapper` is gated behind a removed preview feature. A
+realm JSON containing one imports **silently**, with that mapper dropped and no
+error — the import reports success and you get fewer mappers than you wrote.
 
 ## Local test environment
 
