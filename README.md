@@ -232,6 +232,22 @@ demonstrate the same "unmapped" case, but this Keycloak version doesn't
 register that provider by default, so it's silently dropped on import —
 `oidc-usermodel-realm-role-mapper` exercises the identical contract path).
 
+Milestone 2 added: a plain realm role (`employee`), a **composite** realm role
+(`senior-engineer`, containing `employee` and `code-reviewer` — must report
+`CONFLICT` / `composite_role_unsupported`), a realm role named `engineering`
+that **collides** with the existing `engineering` group (`CONFLICT` /
+`role_name_taken_by_group`), a second client (`internal-tool`) so it and
+`confidential-app` both carry a same-named `admin` client role (unmigratable,
+reported only), an OIDC identity provider (`corporate-sso`) with a secret, a
+SAML identity provider (`corporate-saml`) with a real self-signed certificate,
+an identity provider of an unsupported type, and a federated identity link
+from `ajones` to `corporate-sso`. The unsupported-type provider is seeded as
+`linkedin-openid-connect`, not `linkedin`: this Keycloak version validates
+`providerId` against its registered identity-broker factories at **import**
+time, and `providerId: "linkedin"` aborts the entire server boot rather than
+being dropped — `GET /admin/serverinfo`'s `providers.social.providers`
+confirms `linkedin-openid-connect` is the one actually registered.
+
 ```bash
 cp .env.example .env
 docker compose up -d

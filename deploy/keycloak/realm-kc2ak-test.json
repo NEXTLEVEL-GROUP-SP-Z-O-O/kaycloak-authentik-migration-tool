@@ -73,7 +73,7 @@
         "singleSignOnServiceUrl": "https://saml.example.com/sso",
         "singleLogoutServiceUrl": "https://saml.example.com/slo",
         "idpEntityId": "https://saml.example.com/entity",
-        "signingCertificate": "MIIBmzCCAQQCCQCVK6GKI0T2VjANBgkqhkiG9w0BAQsFADARMQ8wDQYDVQQDDAZrYzJhazAeFw0yNTAxMDEwMDAwMDBaFw0zNTAxMDEwMDAwMDBaMBExDzANBgNVBAMMBmtjMmFrMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDNfakethrowawaytestcertificatedataonlyusedtoexerciseSAMLsourceimport1234567890abcdef",
+        "signingCertificate": "MIIDCzCCAfOgAwIBAgIUFmigMykpoOEW5Q30E6cYeAFaVfUwDQYJKoZIhvcNAQELBQAwFTETMBEGA1UEAwwKa2MyYWstdGVzdDAeFw0yNjA4MTIwODQ1MDRaFw0zNjA4MDkwODQ1MDRaMBUxEzARBgNVBAMMCmtjMmFrLXRlc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDWi932kA+Oisurxei3inKdnVg7PyJ3KRafAwtYQn2dEgY27OoiiVj0kW3KnUIxQp9KOThuDDa0hbdJIfzzsMHuP6PYXwbX7AffmtGdACIRiqqbyFN0kARdQRyZu9ElmyC6THECNprcIWRr9rz5mjFxNVeGvQlgltttos38hWHoeEKdwnl0Hgw/n34B6jXPPjir1YOKA8OnAmIN4IfcQ/mCyjoJHI52Oie3dlvQttZsXw7wCYT1VPFh5bCWsGDerAB5jKRJi1XhoHBHDo6Lj94O/3PFEKFP9vD4OPyDXW107M5Ip86CyCKPJUGqYUleBgf74ZAMaC9td9SOyMw/9j6VAgMBAAGjUzBRMB0GA1UdDgQWBBRzBK5TPByenCNoVw+EfQ370RVX/TAfBgNVHSMEGDAWgBRzBK5TPByenCNoVw+EfQ370RVX/TAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQBbkW2bf7Y5g7QYg25kd+hvxXIeCpqNmU05HD9pEV7TnhTB50aN3fojpZIM9qU5OjCde2eQdxH6ud5ZoAnQRHGXwKoje6ErWGrS/+XXyGNh8TUXDMzeaPyZuZnpHZGGUfP93M62RHXMeE4WBfvnLQBYPrHLGVgW9sLaEiwKwbK2EbKJ3p4jRseZYU9GgpFNvjZxmV5riHwrPo3fvZRCZQAiE6lyFY56r8k2YKPfDniX3oPhflfRt4XjjXXwNQPO59LcuGfPMyR2worRc84rbPrR9lKcuatJJgKh3hqaeVvH0Eo5G/RhHv+db8o6+aM5gTeKSti1OX/FBrFuPbMbRfRY",
         "nameIDPolicyFormat": "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent",
         "syncMode": "IMPORT"
       }
