@@ -23,7 +23,7 @@ from kc2ak.config import Config
 from kc2ak.errors import PreconditionError, UsageError
 from kc2ak.idp_secrets import read_idp_secrets
 from kc2ak.keycloak_client import KeycloakClient
-from kc2ak.mappers.idps import IDP_SECRET_MISSING
+from kc2ak.mappers.idps import DEFAULT_USER_MATCHING_MODE, IDP_SECRET_MISSING, USER_MATCHING_MODES
 from kc2ak.migrator import (
     CONFLICT,
     CREATED,
@@ -31,6 +31,7 @@ from kc2ak.migrator import (
     UPDATED,
     EntityResult,
     migrate_clients,
+    migrate_federated_links,
     migrate_groups,
     migrate_idps,
     migrate_memberships,
@@ -145,6 +146,14 @@ def migrate(
     pre_authentication_flow: str | None = typer.Option(
         None, "--pre-authentication-flow", help="Flow assigned to every created SAML source"
     ),
+    idp_user_matching: str = typer.Option(
+        DEFAULT_USER_MATCHING_MODE,
+        "--idp-user-matching",
+        help=(
+            "How a created/updated source matches a returning user, since authentik's API "
+            "cannot pre-create the per-user link: username_link (default), email_link, identifier"
+        ),
+    ),
     update_existing: bool = typer.Option(
         False, "--update-existing", help="PATCH matched objects instead of skipping them"
     ),
@@ -176,6 +185,11 @@ def migrate(
             )
         if idp_secrets is not None and not idps_in_scope:
             raise UsageError("--idp-secrets requires idps in --only scope")
+        if idp_user_matching not in USER_MATCHING_MODES:
+            raise UsageError(
+                f"--idp-user-matching: invalid value {idp_user_matching!r}; "
+                f"choose from {', '.join(USER_MATCHING_MODES)}"
+            )
         cfg = Config.from_env()
         idp_secrets_map: dict[str, str] = {}
         if idp_secrets is not None and idps_in_scope:
@@ -227,9 +241,9 @@ def migrate(
         # fixed order .chief/milestone-2/_contract/03-cli-and-report-extensions.md
         # requires regardless of the order --only listed them in: idps ->
         # groups -> roles -> users -> memberships -> role assignments ->
-        # federated links -> clients. federated-links has no migrator yet
-        # (task-5), so it always produces zero entities; the row and counts
-        # block still exists so the seam is explicit rather than half-built.
+        # federated links -> clients. federated-links never writes anything --
+        # authentik's API cannot pre-create these links at all (see
+        # migrate_federated_links) -- it only reports.
         idps_apply = apply and idps_in_scope
         need_groups = "groups" in scope or "memberships" in scope
         need_roles = "roles" in scope
@@ -275,6 +289,7 @@ def migrate(
                 update_existing=update_existing,
                 secrets=idp_secrets_map,
                 pre_authentication_flow=pre_authentication_flow,
+                user_matching_mode=idp_user_matching,
             )
         if need_groups:
             group_results, ok_groups, group_pks, group_members = migrate_groups(
@@ -316,6 +331,14 @@ def migrate(
                 role_members=role_members,
                 user_pks=user_pks,
                 resolved_usernames=resolved_usernames,
+            )
+        if "federated-links" in scope:
+            link_results = migrate_federated_links(
+                kc_client,
+                ak_client,
+                realm,
+                idp_results=idp_results,
+                user_matching_mode=idp_user_matching,
             )
         if clients_in_scope:
             assert authorization_flow is not None

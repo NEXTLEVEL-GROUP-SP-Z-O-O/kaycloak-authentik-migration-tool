@@ -13,6 +13,18 @@ from kc2ak.mappers.clients import slugify
 IDP_TYPE_UNSUPPORTED = "idp_type_unsupported"
 IDP_SECRET_MISSING = "idp_secret_missing"
 IDP_MAPPER = "idp_mapper"
+FEDERATED_LINK_SOURCE_MISSING = "federated_link_source_missing"
+FEDERATED_LINK_UNWRITABLE = "federated_link_unwritable"
+
+# authentik's public API has no way to create a UserOAuthSourceConnection /
+# UserSAMLSourceConnection with a chosen user+source+identifier -- confirmed
+# live against authentik 2024.10.5 and unfixed on `main`; see the "Federated
+# identity links" amendment in
+# .chief/milestone-2/_contract/02-idp-mapping.md. Every created/updated
+# source instead gets `user_matching_mode` set so a real login self-links --
+# --idp-user-matching selects it, defaulting here to the safest choice.
+USER_MATCHING_MODES = ("username_link", "email_link", "identifier")
+DEFAULT_USER_MATCHING_MODE = "username_link"
 
 # Keycloak masks clientSecret identically on every route that returns it --
 # there is no unmasked endpoint (.chief/milestone-2/_contract/02-idp-mapping.md).
@@ -77,7 +89,12 @@ def resolved_secret(alias: str, secrets: dict[str, str]) -> str | None:
     return value
 
 
-def map_oauth_source(kc_idp: dict[str, Any], *, secret: str | None) -> dict[str, Any]:
+def map_oauth_source(
+    kc_idp: dict[str, Any],
+    *,
+    secret: str | None,
+    user_matching_mode: str = DEFAULT_USER_MATCHING_MODE,
+) -> dict[str, Any]:
     """Map an OAuth-family Keycloak IdP (oidc/keycloak-oidc or a whitelisted
     social provider) to an authentik OAuthSource create/update payload.
     `secret` is the real value from the secrets file, or None -- a None here
@@ -92,7 +109,9 @@ def map_oauth_source(kc_idp: dict[str, Any], *, secret: str | None) -> dict[str,
     guessing is correct either way: a genuinely incomplete generic-OIDC
     config is not this tool's to complete, and the write is rejected
     (CONFLICT-free FAILED / api_rejected) rather than silently working with
-    invented endpoints.
+    invented endpoints. `user_matching_mode` is what stands in for the
+    per-user federated links this tool cannot write -- see the "Federated
+    identity links" amendment.
     """
     alias = kc_idp["alias"]
     config = kc_idp.get("config") or {}
@@ -103,6 +122,7 @@ def map_oauth_source(kc_idp: dict[str, Any], *, secret: str | None) -> dict[str,
         "consumer_key": config.get("clientId", ""),
         "consumer_secret": secret if secret is not None else PLACEHOLDER_SECRET,
         "enabled": secret is not None,
+        "user_matching_mode": user_matching_mode,
     }
     if config.get("authorizationUrl"):
         payload["authorization_url"] = config["authorizationUrl"]
@@ -131,6 +151,7 @@ def map_saml_source(
     *,
     pre_authentication_flow: str,
     signing_kp: str | None,
+    user_matching_mode: str = DEFAULT_USER_MATCHING_MODE,
 ) -> dict[str, Any]:
     """Map a `saml` Keycloak IdP to an authentik SAMLSource create/update
     payload. `pre_authentication_flow` is the flow's resolved pk, not its
@@ -138,7 +159,9 @@ def map_saml_source(
     flow fields, rejects a slug with "not a valid UUID". `signing_kp` is the
     pk of the CertificateKeyPair imported from Keycloak's signingCertificate,
     or None when Keycloak's config has none (SAMLSourceRequest does not
-    require it).
+    require it). `user_matching_mode` is what stands in for the per-user
+    federated links this tool cannot write -- see the "Federated identity
+    links" amendment.
     """
     alias = kc_idp["alias"]
     config = kc_idp.get("config") or {}
@@ -150,6 +173,7 @@ def map_saml_source(
         # SAMLSourceRequest requires no secret -- unaffected by the
         # unobtainable-clientSecret problem, so always created working.
         "enabled": True,
+        "user_matching_mode": user_matching_mode,
     }
     if config.get("singleLogoutServiceUrl"):
         payload["slo_url"] = config["singleLogoutServiceUrl"]

@@ -108,6 +108,18 @@ def test_map_oauth_source_enabled_with_secret() -> None:
     assert "oidc_well_known_url" not in payload  # no `issuer` in this fixture
 
 
+def test_map_oauth_source_defaults_user_matching_mode_to_username_link() -> None:
+    idp = _idps()["corporate-sso"]
+    payload = map_oauth_source(idp, secret="s")
+    assert payload["user_matching_mode"] == "username_link"
+
+
+def test_map_oauth_source_respects_custom_user_matching_mode() -> None:
+    idp = _idps()["corporate-sso"]
+    payload = map_oauth_source(idp, secret="s", user_matching_mode="email_link")
+    assert payload["user_matching_mode"] == "email_link"
+
+
 def test_map_oauth_source_disabled_without_secret() -> None:
     idp = _idps()["corporate-sso"]
     payload = map_oauth_source(idp, secret=None)
@@ -170,6 +182,20 @@ def test_map_saml_source_omits_signing_kp_when_none() -> None:
     idp = _idps()["corporate-saml"]
     payload = map_saml_source(idp, pre_authentication_flow="flow-pk", signing_kp=None)
     assert "signing_kp" not in payload
+
+
+def test_map_saml_source_defaults_user_matching_mode_to_username_link() -> None:
+    idp = _idps()["corporate-saml"]
+    payload = map_saml_source(idp, pre_authentication_flow="flow-pk", signing_kp=None)
+    assert payload["user_matching_mode"] == "username_link"
+
+
+def test_map_saml_source_respects_custom_user_matching_mode() -> None:
+    idp = _idps()["corporate-saml"]
+    payload = map_saml_source(
+        idp, pre_authentication_flow="flow-pk", signing_kp=None, user_matching_mode="identifier"
+    )
+    assert payload["user_matching_mode"] == "identifier"
 
 
 # --- unmapped_idp_mappers -----------------------------------------------------

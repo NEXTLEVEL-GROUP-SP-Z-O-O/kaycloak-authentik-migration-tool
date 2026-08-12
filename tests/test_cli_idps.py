@@ -59,7 +59,7 @@ def _kc_handler(idps: list[dict[str, Any]]):
     return handler
 
 
-def _ak_handler(request: httpx.Request) -> httpx.Response:
+def _ak_handler(request: httpx.Request, *, created: list[dict[str, Any]]) -> httpx.Response:
     path = request.url.path
     method = request.method
     if path == "/api/v3/core/users/me/" and method == "GET":
@@ -72,9 +72,11 @@ def _ak_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"results": []})
     if path == "/api/v3/sources/oauth/" and method == "POST":
         body = json.loads(request.content)
+        created.append(body)
         return httpx.Response(201, json={"pk": "src-1", **body})
     if path == "/api/v3/sources/saml/" and method == "POST":
         body = json.loads(request.content)
+        created.append(body)
         return httpx.Response(201, json={"pk": "src-2", **body})
     if path == "/api/v3/crypto/certificatekeypairs/" and method == "GET":
         return httpx.Response(200, json={"results": []})
@@ -84,8 +86,14 @@ def _ak_handler(request: httpx.Request) -> httpx.Response:
     raise AssertionError(f"unexpected Authentik request: {method} {path}")
 
 
-def _patch_clients(monkeypatch: pytest.MonkeyPatch, *, idps: list[dict[str, Any]]) -> None:
+def _patch_clients(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    idps: list[dict[str, Any]],
+    created_sources: list[dict[str, Any]] | None = None,
+) -> None:
     kc_handler = _kc_handler(idps)
+    created = created_sources if created_sources is not None else []
 
     def kc_factory(base_url: str, **kwargs: Any) -> KeycloakClient:
         kwargs.pop("transport", None)
@@ -93,9 +101,11 @@ def _patch_clients(monkeypatch: pytest.MonkeyPatch, *, idps: list[dict[str, Any]
 
     def ak_factory(base_url: str, token: str, **kwargs: Any) -> AuthentikClient:
         kwargs.pop("transport", None)
-        return AuthentikClient(
-            base_url, token, transport=httpx.MockTransport(_ak_handler), **kwargs
-        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _ak_handler(request, created=created)
+
+        return AuthentikClient(base_url, token, transport=httpx.MockTransport(handler), **kwargs)
 
     monkeypatch.setattr("kc2ak.cli.KeycloakClient", kc_factory)
     monkeypatch.setattr("kc2ak.cli.AuthentikClient", ak_factory)
@@ -241,3 +251,41 @@ def test_secret_never_appears_in_report_or_stdout(
     )
     assert secret_value not in result.output
     assert secret_value not in report_path.read_text()
+
+
+# --- --idp-user-matching: stands in for the links authentik's API can't write ---
+
+
+def test_idp_user_matching_defaults_to_username_link(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _set_env(monkeypatch)
+    created: list[dict[str, Any]] = []
+    _patch_clients(monkeypatch, idps=[CORPORATE_SSO], created_sources=created)
+    result = _run("--apply", "--only", "idps", report_path=tmp_path / "r.json")
+    assert result.exit_code != 3
+    assert created[0]["user_matching_mode"] == "username_link"
+
+
+def test_idp_user_matching_flag_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _set_env(monkeypatch)
+    created: list[dict[str, Any]] = []
+    _patch_clients(monkeypatch, idps=[CORPORATE_SSO], created_sources=created)
+    _run(
+        "--apply",
+        "--only",
+        "idps",
+        "--idp-user-matching",
+        "email_link",
+        report_path=tmp_path / "r.json",
+    )
+    assert created[0]["user_matching_mode"] == "email_link"
+
+
+def test_idp_user_matching_rejects_unknown_value(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _set_env(monkeypatch)
+    _patch_clients(monkeypatch, idps=[])
+    result = _run("--only", "idps", "--idp-user-matching", "bogus", report_path=tmp_path / "r.json")
+    assert result.exit_code == 3

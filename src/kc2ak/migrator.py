@@ -29,6 +29,9 @@ from kc2ak.mappers.clients import (
 )
 from kc2ak.mappers.groups import NESTED_GROUPS_UNSUPPORTED, is_nested, map_group
 from kc2ak.mappers.idps import (
+    DEFAULT_USER_MATCHING_MODE,
+    FEDERATED_LINK_SOURCE_MISSING,
+    FEDERATED_LINK_UNWRITABLE,
     IDP_SECRET_MISSING,
     IDP_TYPE_UNSUPPORTED,
     map_oauth_source,
@@ -118,6 +121,7 @@ def migrate_idps(
     update_existing: bool = False,
     secrets: dict[str, str] | None = None,
     pre_authentication_flow: str | None = None,
+    user_matching_mode: str = DEFAULT_USER_MATCHING_MODE,
 ) -> list[EntityResult]:
     """One entity per Keycloak identity provider, matched against an
     authentik source by natural key (source `slug` <- IdP `alias`,
@@ -152,6 +156,17 @@ def migrate_idps(
     it in that case. Keycloak IdP mappers are read once per provider and
     reported as unmapped type idp_mapper, unconditionally, same as
     migrate_clients' client-role read.
+
+    `user_matching_mode` is written onto every created/updated source
+    (mappers.idps.map_oauth_source/map_saml_source) -- it stands in for the
+    per-user federated links this tool cannot write at all: authentik's
+    public API has no way to create a UserOAuthSourceConnection /
+    UserSAMLSourceConnection with a chosen user+source+identifier, confirmed
+    live against authentik 2024.10.5 and unfixed on `main`. See the
+    "Federated identity links" amendment in
+    .chief/milestone-2/_contract/02-idp-mapping.md. migrate_federated_links
+    reports, per source, how many Keycloak users depend on this matching
+    mode working instead of writing anything.
     """
     results: list[EntityResult] = []
     secrets = secrets or {}
@@ -220,7 +235,9 @@ def migrate_idps(
                     )
                     continue
                 if kind == "oauth":
-                    payload = map_oauth_source(kc_idp, secret=secret)
+                    payload = map_oauth_source(
+                        kc_idp, secret=secret, user_matching_mode=user_matching_mode
+                    )
                     update_response = ak.update_oauth_source(payload["slug"], payload)
                 else:
                     pre_auth_flow_pk = _pre_auth_flow_pk()
@@ -228,6 +245,7 @@ def migrate_idps(
                         kc_idp,
                         pre_authentication_flow=pre_auth_flow_pk,
                         signing_kp=_saml_signing_kp(ak, kc_idp),
+                        user_matching_mode=user_matching_mode,
                     )
                     update_response = ak.update_saml_source(payload["slug"], payload)
                 if update_response.status_code >= 400:
@@ -247,7 +265,9 @@ def migrate_idps(
                 continue
 
             if kind == "oauth":
-                payload = map_oauth_source(kc_idp, secret=secret)
+                payload = map_oauth_source(
+                    kc_idp, secret=secret, user_matching_mode=user_matching_mode
+                )
                 create_response = ak.create_oauth_source(payload)
             else:
                 pre_auth_flow_pk = _pre_auth_flow_pk()
@@ -255,6 +275,7 @@ def migrate_idps(
                     kc_idp,
                     pre_authentication_flow=pre_auth_flow_pk,
                     signing_kp=_saml_signing_kp(ak, kc_idp),
+                    user_matching_mode=user_matching_mode,
                 )
                 create_response = ak.create_saml_source(payload)
             if create_response.status_code >= 400:
@@ -760,6 +781,90 @@ def migrate_role_assignments(
                     results.append(EntityResult("membership", kc_id, ref, group_pk, CREATED))
             except httpx.HTTPError:
                 results.append(EntityResult("membership", kc_id, ref, None, FAILED, API_REJECTED))
+
+    return results
+
+
+def migrate_federated_links(
+    kc: KeycloakClient,
+    ak: AuthentikClient,
+    realm: str,
+    *,
+    idp_results: list[EntityResult],
+    user_matching_mode: str,
+) -> list[EntityResult]:
+    """Federated identity links are never written -- authentik's public API
+    has no way to create a UserOAuthSourceConnection/UserSAMLSourceConnection
+    with a chosen user+source+identifier (see migrate_idps' docstring and the
+    "Federated identity links" amendment in
+    .chief/milestone-2/_contract/02-idp-mapping.md). `user_matching_mode`
+    stands in for it, set on every source by migrate_idps.
+
+    Two outcomes only:
+
+    - A link whose source did not resolve this run at all -- an unsupported
+      providerId, or `--only` excluded idps and no matching source exists
+      live -- is a real, per-user, actionable failure: CONFLICT /
+      federated_link_source_missing, kind "federated_link". This is the one
+      case migrate_federated_links still emits an entity for.
+    - A link whose source did resolve is not an entity at all. Emitting one
+      CONFLICT per user for a condition that is uniform across every linked
+      user and already mitigated by user_matching_mode would be exactly the
+      noise .chief/_rules/_standard/diagnostics.md forbids. Instead this
+      mutates that source's own EntityResult (found in idp_results by alias)
+      with one `unmapped` entry of type federated_link_unwritable, carrying
+      how many Keycloak users depend on the matching mode working. When idps
+      was not in scope this run, idp_results has no entity for that alias to
+      attach the count to -- an earlier run's idp entity already carried it,
+      so nothing more is emitted here.
+    """
+    results: list[EntityResult] = []
+    by_alias = {r.keycloak_ref: r for r in idp_results if r.kind == "idp"}
+    resolved_this_run = {
+        alias for alias, r in by_alias.items() if r.outcome in (CREATED, SKIPPED, UPDATED)
+    }
+    counts: dict[str, int] = {}
+    live_exists: dict[str, bool] = {}
+
+    def _source_exists_live(alias: str) -> bool:
+        if alias not in live_exists:
+            live_exists[alias] = ak.find_source_by_slug(slugify(alias)) is not None
+        return live_exists[alias]
+
+    for kc_user in kc.get_users(realm):
+        username = kc_user["username"]
+        kc_user_id = kc_user["id"]
+
+        for link in kc.get_federated_identities(realm, kc_user_id):
+            alias = link["identityProvider"]
+            kc_id = f"{kc_user_id}:{alias}"
+            ref = f"{username}/{alias}"
+
+            if alias in resolved_this_run or (alias not in by_alias and _source_exists_live(alias)):
+                counts[alias] = counts.get(alias, 0) + 1
+                continue
+
+            results.append(
+                EntityResult(
+                    "federated_link", kc_id, ref, None, CONFLICT, FEDERATED_LINK_SOURCE_MISSING
+                )
+            )
+
+    for alias, count in counts.items():
+        entity = by_alias.get(alias)
+        if entity is None:
+            continue
+        entity.unmapped.append(
+            {
+                "type": FEDERATED_LINK_UNWRITABLE,
+                "name": alias,
+                "why": (
+                    f"{count} Keycloak user(s) hold a federated identity to this source; "
+                    f"authentik cannot pre-create the link, user_matching_mode="
+                    f"{user_matching_mode} was set instead"
+                ),
+            }
+        )
 
     return results
 

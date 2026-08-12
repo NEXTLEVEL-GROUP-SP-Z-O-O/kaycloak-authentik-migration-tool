@@ -190,6 +190,23 @@ class KeycloakClient:
         result: list[dict[str, Any]] = response.json()
         return result
 
+    def get_federated_identities(self, realm: str, user_id: str) -> list[dict[str, Any]]:
+        """GET /admin/realms/{realm}/users/{id}/federated-identity. Not
+        paginated -- Keycloak returns the full list in one response, same as
+        get_user_realm_roles. `identityProvider` matches an identity
+        provider's `alias`; `userId` is the external identifier Keycloak
+        recorded for that link (.chief/milestone-2/_contract/02-idp-mapping.md).
+        """
+        response = request_with_retry(
+            self._client,
+            "GET",
+            f"/admin/realms/{realm}/users/{user_id}/federated-identity",
+            headers=self._auth_headers(),
+        )
+        response.raise_for_status()
+        result: list[dict[str, Any]] = response.json()
+        return result
+
     def get_client_secret(self, realm: str, client_id: str) -> str:
         """GET /admin/realms/{realm}/clients/{id}/client-secret. `client_id`
         here is Keycloak's internal `id` (uuid), not the OIDC `clientId`.

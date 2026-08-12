@@ -97,6 +97,8 @@ def _kc_handler(
             return httpx.Response(200, json=clients[first : first + max_])
         if path.endswith("/identity-provider/instances"):
             return httpx.Response(200, json=[])
+        if path.endswith("/federated-identity"):
+            return httpx.Response(200, json=[])
         raise AssertionError(f"unexpected Keycloak request: {path}")
 
     return handler
