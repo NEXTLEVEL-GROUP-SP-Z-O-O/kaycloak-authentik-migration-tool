@@ -282,6 +282,23 @@ def test_idp_user_matching_flag_overrides(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert created[0]["user_matching_mode"] == "email_link"
 
 
+def test_idp_user_matching_identifier_value(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _set_env(monkeypatch)
+    created: list[dict[str, Any]] = []
+    _patch_clients(monkeypatch, idps=[CORPORATE_SSO], created_sources=created)
+    _run(
+        "--apply",
+        "--only",
+        "idps",
+        "--idp-user-matching",
+        "identifier",
+        report_path=tmp_path / "r.json",
+    )
+    assert created[0]["user_matching_mode"] == "identifier"
+
+
 def test_idp_user_matching_rejects_unknown_value(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
