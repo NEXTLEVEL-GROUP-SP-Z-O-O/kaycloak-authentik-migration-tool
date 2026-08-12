@@ -20,6 +20,9 @@ _KIND_TO_KEY = {
     "user": "users",
     "membership": "memberships",
     "client": "clients",
+    "role": "roles",
+    "idp": "idps",
+    "federated_link": "links",
 }
 _OUTCOME_TO_KEY = {
     "CREATED": "created",
@@ -124,28 +127,33 @@ def build_report(
     }
 
 
-# The one exception to "any unmapped entry gates exit 1": standard_scope_claim
-# is a universal property of every Keycloak -> authentik migration (the same
-# three claims drop on every run, for every client that declares `profile` or
-# `email`), not a per-realm finding an operator needs to review. Gating on it
-# would make exit 0 unreachable forever and teach operators to skip past
-# `unmapped` -- the same reasoning `unmapped_client_fields` already applies to
+# The two exceptions to "any unmapped entry gates exit 1": standard_scope_claim
+# and (milestone-2) role_field are universal properties of every migration --
+# the same three claims drop on every client that declares `profile` or
+# `email`, and `description` is unreproducible on every role that has one --
+# not per-realm findings an operator needs to review. Gating on them would
+# make exit 0 unreachable forever and teach operators to skip past `unmapped`
+# -- the same reasoning `unmapped_client_fields` already applies to
 # unconditional entries, one level up
-# (.chief/milestone-1/_contract/02-report-schema.md). Framed as an exception
-# (gate unless this one type) rather than an allowlist of gating types, so an
-# unknown future `unmapped` type fails loud (exit 1) instead of silently
-# defaulting to a green exit.
-_NON_GATING_UNMAPPED_TYPE = "standard_scope_claim"
+# (.chief/milestone-1/_contract/02-report-schema.md,
+# .chief/milestone-2/_contract/01-role-mapping.md). Framed as an exception
+# (gate unless one of these) rather than an allowlist of gating types, so an
+# unknown future `unmapped` type -- including idp_secret_missing and idp_mapper,
+# not yet produced by any migrator -- fails loud (exit 1) instead of silently
+# defaulting to a green exit
+# (.chief/milestone-2/_contract/03-cli-and-report-extensions.md).
+_NON_GATING_UNMAPPED_TYPES = frozenset({"standard_scope_claim", "role_field"})
 
 
 def exit_code(entities: list[EntityResult]) -> int:
     """0 clean, 1 completed with findings -- conflicts, failures, or an
-    unmapped entry other than `_NON_GATING_UNMAPPED_TYPE`
-    (.chief/milestone-1/_contract/01-cli-interface.md).
+    unmapped entry whose type is not in `_NON_GATING_UNMAPPED_TYPES`
+    (.chief/milestone-1/_contract/01-cli-interface.md,
+    .chief/milestone-2/_contract/03-cli-and-report-extensions.md).
     """
     has_findings = any(
         e.outcome in (CONFLICT, FAILED)
-        or any(u["type"] != _NON_GATING_UNMAPPED_TYPE for u in e.unmapped)
+        or any(u["type"] not in _NON_GATING_UNMAPPED_TYPES for u in e.unmapped)
         for e in entities
     )
     return 1 if has_findings else 0

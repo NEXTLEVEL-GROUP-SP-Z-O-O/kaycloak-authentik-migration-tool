@@ -57,6 +57,16 @@ def test_count_line_with_update_existing_adds_update_column() -> None:
     )
 
 
+def test_count_line_matches_contract_example_for_new_rows() -> None:
+    # .chief/milestone-2/_contract/03-cli-and-report-extensions.md's example
+    # block -- same _count_line, new labels ("idps", "roles", "links").
+    assert _count_line("idps", _results(2, 0, 1)) == "idps         2 create,   0 skip,  1 conflict"
+    assert _count_line("roles", _results(8, 0, 2)) == "roles        8 create,   0 skip,  2 conflict"
+    assert (
+        _count_line("links", _results(210, 0, 4)) == "links      210 create,   0 skip,  4 conflict"
+    )
+
+
 def test_recovery_line_matches_contract_example() -> None:
     line = _recovery_line({"eligible": 847, "no_email_address": 0})
     assert line == "recovery mail would be sent to 847 users (0 lack an email address)"

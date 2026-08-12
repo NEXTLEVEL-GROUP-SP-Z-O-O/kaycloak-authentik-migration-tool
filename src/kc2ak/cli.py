@@ -31,6 +31,8 @@ from kc2ak.migrator import (
     migrate_clients,
     migrate_groups,
     migrate_memberships,
+    migrate_role_assignments,
+    migrate_roles,
     migrate_users,
 )
 from kc2ak.preconditions import check_preconditions
@@ -52,7 +54,23 @@ ClickUsageError.exit_code = 3
 
 app = typer.Typer(add_completion=False)
 
-_ALL_ENTITY_TYPES = ("groups", "users", "memberships", "clients")
+# In the fixed processing order from
+# .chief/milestone-2/_contract/03-cli-and-report-extensions.md: idps -> groups
+# -> roles -> users -> memberships -> role assignments -> federated links ->
+# clients. Role assignments are not a separate value here -- they are
+# `--only roles`'s job, per .chief/milestone-2/_contract/01-role-mapping.md.
+# "idps" and "federated-links" are parsed and gated like every other kind, but
+# have no migrator behind them yet (task-4/task-5); they always produce zero
+# entities until then.
+_ALL_ENTITY_TYPES = (
+    "idps",
+    "groups",
+    "roles",
+    "users",
+    "memberships",
+    "federated-links",
+    "clients",
+)
 _DEFAULT_REPORT_PATH = Path("./kc2ak-report.json")
 
 
@@ -125,7 +143,12 @@ def migrate(
         _DEFAULT_REPORT_PATH, "--report", help="Where the machine-readable report is written"
     ),
     only: str | None = typer.Option(
-        None, "--only", help="Restrict to groups,users,memberships,clients (comma-separated)"
+        None,
+        "--only",
+        help=(
+            "Restrict to idps,groups,roles,users,memberships,federated-links,clients "
+            "(comma-separated)"
+        ),
     ),
 ) -> None:
     """Migrate one Keycloak realm into Authentik."""
@@ -176,27 +199,46 @@ def migrate(
 
         started_at = _now_iso()
 
-        # Preconditions passed. groups/users/memberships now actually
-        # migrate, in the fixed order the goal requires; clients (providers,
-        # applications, protocol mappers) are task-5, so that line still
-        # reports zero.
+        # Preconditions passed. Entity kinds now actually migrate, in the
+        # fixed order .chief/milestone-2/_contract/03-cli-and-report-extensions.md
+        # requires regardless of the order --only listed them in: idps ->
+        # groups -> roles -> users -> memberships -> role assignments ->
+        # federated links -> clients. idps and federated-links have no
+        # migrator yet (task-4/task-5), so those two always produce zero
+        # entities; the rows and counts blocks still exist so the seam is
+        # explicit rather than half-built.
         need_groups = "groups" in scope or "memberships" in scope
-        need_users = "users" in scope or "memberships" in scope
-        # A group/user pass run only to support memberships (not itself in
-        # --only) must never write -- --only memberships means "match
-        # against what an earlier run already created," not "create groups
-        # and users I explicitly scoped out."
+        need_roles = "roles" in scope
+        # A role's own creation never needs users (it matches/creates a
+        # group directly against Authentik); its assignments do, so "roles"
+        # joins "users"/"memberships" as a reason the users pass has to run.
+        need_users = "users" in scope or "memberships" in scope or "roles" in scope
+        # A group/user/role pass run only to support memberships or role
+        # assignments (not itself in --only) must never write -- e.g.
+        # --only memberships means "match against what an earlier run
+        # already created," not "create groups and users I explicitly
+        # scoped out." --only roles covers a role *and* its assignments
+        # (.chief/milestone-2/_contract/01-role-mapping.md) -- there is no
+        # separate role-assignments selector, so both are gated on "roles".
         groups_apply = apply and "groups" in scope
+        roles_apply = apply and "roles" in scope
         users_apply = apply and "users" in scope
         clients_apply = apply and clients_in_scope
 
         group_results: list[EntityResult] = []
+        role_results: list[EntityResult] = []
         user_results: list[EntityResult] = []
-        membership_results: list[EntityResult] = []
+        group_membership_results: list[EntityResult] = []
+        role_assignment_results: list[EntityResult] = []
         client_results: list[EntityResult] = []
+        idp_results: list[EntityResult] = []
+        link_results: list[EntityResult] = []
         ok_groups: dict[str, str] = {}
         group_pks: dict[str, str] = {}
         group_members: dict[str, set[int]] = {}
+        role_pks: dict[str, str] = {}
+        role_conflicted: set[str] = set()
+        role_members: dict[str, set[int]] = {}
         user_pks: dict[str, int] = {}
         resolved_usernames: set[str] = set()
 
@@ -204,12 +246,16 @@ def migrate(
             group_results, ok_groups, group_pks, group_members = migrate_groups(
                 kc_client, ak_client, realm, apply=groups_apply, update_existing=update_existing
             )
+        if need_roles:
+            role_results, role_pks, role_conflicted, role_members = migrate_roles(
+                kc_client, ak_client, realm, apply=roles_apply, update_existing=update_existing
+            )
         if need_users:
             user_results, user_pks, resolved_usernames = migrate_users(
                 kc_client, ak_client, realm, apply=users_apply, update_existing=update_existing
             )
         if "memberships" in scope:
-            membership_results = migrate_memberships(
+            group_membership_results = migrate_memberships(
                 kc_client,
                 ak_client,
                 realm,
@@ -217,6 +263,18 @@ def migrate(
                 ok_groups=ok_groups,
                 group_pks=group_pks,
                 group_members=group_members,
+                user_pks=user_pks,
+                resolved_usernames=resolved_usernames,
+            )
+        if need_roles:
+            role_assignment_results = migrate_role_assignments(
+                kc_client,
+                ak_client,
+                realm,
+                apply=roles_apply,
+                role_pks=role_pks,
+                role_conflicted=role_conflicted,
+                role_members=role_members,
                 user_pks=user_pks,
                 resolved_usernames=resolved_usernames,
             )
@@ -233,14 +291,29 @@ def migrate(
                 update_existing=update_existing,
             )
 
+        # Role assignments are `kind: "membership"`, not their own kind
+        # (.chief/milestone-2/_contract/01-role-mapping.md) -- combined here
+        # so the "memberships" row/counts reconcile against both sources.
+        membership_results = group_membership_results + role_assignment_results
+
+        if "idps" in scope:
+            typer.echo(_count_line("idps", idp_results, update_existing=update_existing))
         if "groups" in scope:
             typer.echo(_count_line("groups", group_results, update_existing=update_existing))
+        if "roles" in scope:
+            typer.echo(_count_line("roles", role_results, update_existing=update_existing))
         if "users" in scope:
             typer.echo(_count_line("users", user_results, update_existing=update_existing))
-        if "memberships" in scope:
+        # "memberships" or "roles" -- the latter can write membership
+        # entities (role assignments) with "memberships" absent from
+        # --only, and that effect must be visible on stdout where it
+        # happened (.chief/_rules/_standard/diagnostics.md).
+        if "memberships" in scope or "roles" in scope:
             typer.echo(
                 _count_line("memberships", membership_results, update_existing=update_existing)
             )
+        if "federated-links" in scope:
+            typer.echo(_count_line("links", link_results, update_existing=update_existing))
         if clients_in_scope:
             typer.echo(_count_line("clients", client_results, update_existing=update_existing))
 
@@ -270,7 +343,15 @@ def migrate(
             typer.echo("dry run — nothing written. re-run with --apply")
 
         finished_at = _now_iso()
-        entities = [*group_results, *user_results, *membership_results, *client_results]
+        entities = [
+            *idp_results,
+            *group_results,
+            *role_results,
+            *user_results,
+            *membership_results,
+            *link_results,
+            *client_results,
+        ]
         report_data = build_report(
             realm=realm,
             applied=apply,

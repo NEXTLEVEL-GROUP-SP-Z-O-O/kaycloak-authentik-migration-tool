@@ -295,6 +295,133 @@ def test_compute_recovery_mail_defaults_match_task3_placeholders() -> None:
     }
 
 
+def test_counts_reconcile_with_milestone_2_kinds() -> None:
+    """task-3: report._KIND_TO_KEY was missing "role" entirely -- a role
+    entity would have raised KeyError in _build_counts. Covers the fix and
+    the two brand-new kinds (idp, federated_link) in the same run as the
+    milestone-1 kinds, per goal 03's "counts reconcile across all of them."
+    """
+    entities = [
+        EntityResult("role", "r1", "engineering-role", "pk-9", CREATED),
+        EntityResult("role", "r2", "admins", None, CONFLICT, "role_name_taken_by_group"),
+        EntityResult("membership", "u1:r1", "jkowalski/engineering-role", "pk-9", CREATED),
+        EntityResult("idp", "i1", "corp-oidc", None, CREATED),
+        EntityResult("federated_link", "l1", "jkowalski/corp-oidc", None, CREATED),
+        EntityResult("group", "g1", "engineering", "pk-1", CREATED),
+    ]
+    report = build_report(
+        realm="x",
+        applied=True,
+        started_at="t0",
+        finished_at="t1",
+        entities=entities,
+        recovery_mail=compute_recovery_mail(entities),
+    )
+    total_counted = sum(sum(kind.values()) for kind in report["counts"].values())
+    assert total_counted == len(entities)
+    assert report["counts"]["roles"] == {
+        "created": 1,
+        "skipped": 0,
+        "updated": 0,
+        "conflict": 1,
+        "failed": 0,
+    }
+    assert report["counts"]["idps"]["created"] == 1
+    assert report["counts"]["links"]["created"] == 1
+    # The role assignment is its own membership entity, counted under
+    # counts.memberships, never a separate "role" count
+    # (.chief/milestone-2/_contract/01-role-mapping.md).
+    assert report["counts"]["memberships"]["created"] == 1
+    kinds = {e["kind"] for e in report["entities"]}
+    assert kinds == {"role", "membership", "idp", "federated_link", "group"}
+
+
+def test_exit_code_zero_when_only_unmapped_is_role_field() -> None:
+    """.chief/milestone-2/_contract/01-role-mapping.md: role `description`
+    is unreproducible on every role that has one -- the same universal-drop
+    reasoning as standard_scope_claim, so it must not gate.
+    """
+    entities = [
+        EntityResult(
+            "role",
+            "r1",
+            "engineering-role",
+            "pk-1",
+            CREATED,
+            None,
+            unmapped=[{"type": "role_field", "name": "description", "why": "not carried over"}],
+        )
+    ]
+    assert exit_code(entities) == 0
+
+
+def test_exit_code_zero_when_both_non_gating_types_present_together() -> None:
+    """.chief/milestone-1/_contract/01-cli-interface.md's exit-code table,
+    footnote extended by milestone 2: "no CONFLICT, no FAILED, and every
+    unmapped empty except standard_scope_claim / role_field" -- both, on the
+    same entity, together, must still be exit 0.
+    """
+    entities = [
+        EntityResult(
+            "client",
+            "c1",
+            "billing-api",
+            "billing-api",
+            CREATED,
+            None,
+            unmapped=[
+                {
+                    "type": "standard_scope_claim",
+                    "name": "email_verified",
+                    "why": "authentik does not track email verification",
+                },
+                {"type": "role_field", "name": "description", "why": "not carried over"},
+            ],
+        )
+    ]
+    assert exit_code(entities) == 0
+
+
+def test_exit_code_one_on_each_new_gating_unmapped_type() -> None:
+    """The five milestone-2 unmapped types other than role_field all gate --
+    including idp_secret_missing/idp_mapper, which no migrator produces yet
+    (task-4). The exception-list form means a type is gating unless
+    explicitly exempted, so these are covered here at the report level even
+    without a producer.
+    """
+    for unmapped_type in ("client_role", "idp_secret_missing", "idp_mapper"):
+        entities = [
+            EntityResult(
+                "client",
+                "c1",
+                "some-ref",
+                "some-ref",
+                CREATED,
+                None,
+                unmapped=[{"type": unmapped_type, "name": "x", "why": "y"}],
+            )
+        ]
+        assert exit_code(entities) == 1, unmapped_type
+
+
+def test_exit_code_one_when_role_field_mixed_with_gating_type() -> None:
+    entities = [
+        EntityResult(
+            "role",
+            "r1",
+            "engineering-role",
+            "pk-1",
+            CREATED,
+            None,
+            unmapped=[
+                {"type": "role_field", "name": "description", "why": "not carried over"},
+                {"type": "client_role", "name": "billing-admin", "why": "not migrated"},
+            ],
+        )
+    ]
+    assert exit_code(entities) == 1
+
+
 def test_no_secrets_in_written_report(tmp_path: Path) -> None:
     secret = "super-secret-client-token"
     redact_mod.register_secret(secret)
