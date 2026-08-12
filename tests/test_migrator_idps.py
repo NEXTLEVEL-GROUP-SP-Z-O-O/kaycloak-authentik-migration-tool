@@ -401,6 +401,61 @@ def test_existing_source_is_updated_under_update_existing() -> None:
     assert fake.create_oauth_calls == 0
 
 
+def test_update_existing_carries_flow_pks_through_the_patch_payload() -> None:
+    # task-5b: the update branch reuses the same map_oauth_source payload a
+    # create would build, so a supplied --authentication-flow/--enrollment-flow
+    # must show up on the PATCH body too, not just on create.
+    fake = FakeAuthentikSources()
+    fake.seed_source("corporate-sso")
+    idps = [i for i in _idps_fixture() if i["alias"] == "corporate-sso"]
+    kc = _kc_client(idps)
+    results = migrate_idps(
+        kc,
+        _ak_client(fake),
+        REALM,
+        apply=True,
+        update_existing=True,
+        secrets={"corporate-sso": "s"},
+        authentication_flow=AUTH_FLOW_SLUG,
+        enrollment_flow=ENROLL_FLOW_SLUG,
+    )
+    assert results[0].outcome == UPDATED
+    updated = fake.sources["corporate-sso"]
+    assert updated["authentication_flow"] == AUTH_FLOW_PK
+    assert updated["enrollment_flow"] == ENROLL_FLOW_PK
+    assert updated["enabled"] is True
+
+
+def test_update_existing_without_flows_disables_a_previously_working_source() -> None:
+    # task-5b: `enabled` is computed from this run's inputs, not read back from
+    # the live source. An --update-existing run that omits the new flags
+    # writes enabled=False onto a source whose flows were already fine --
+    # the same disabled-with-a-reason rule applied consistently, not a new
+    # special case. Flagged in the task-5b report as a decided-but-notable
+    # consequence; the live flow fields themselves are untouched since the
+    # keys are simply absent from the payload (see map_oauth_source).
+    fake = FakeAuthentikSources()
+    fake.seed_source("corporate-sso")
+    idps = [i for i in _idps_fixture() if i["alias"] == "corporate-sso"]
+    kc = _kc_client(idps)
+    results = migrate_idps(
+        kc,
+        _ak_client(fake),
+        REALM,
+        apply=True,
+        update_existing=True,
+        secrets={"corporate-sso": "s"},
+    )
+    assert results[0].outcome == UPDATED
+    updated = fake.sources["corporate-sso"]
+    assert updated["enabled"] is False
+    # the payload omits the flow keys entirely rather than nulling them out
+    # (see map_oauth_source), so a live source's own flow fields are untouched
+    assert "authentication_flow" not in updated
+    assert "enrollment_flow" not in updated
+    assert any(u["type"] == IDP_FLOW_MISSING for u in results[0].unmapped)
+
+
 # --- failure isolation ---------------------------------------------------------
 
 
