@@ -68,9 +68,10 @@ app = typer.Typer(add_completion=False)
 # -> roles -> users -> memberships -> role assignments -> federated links ->
 # clients. Role assignments are not a separate value here -- they are
 # `--only roles`'s job, per .chief/milestone-2/_contract/01-role-mapping.md.
-# "idps" and "federated-links" are parsed and gated like every other kind, but
-# have no migrator behind them yet (task-4/task-5); they always produce zero
-# entities until then.
+# "federated-links" is parsed and gated like every other kind but never
+# writes: authentik's API cannot pre-create a per-user source link at all, so
+# it only reports (see migrator.migrate_federated_links; the source-level
+# substitute is `user_matching_mode`).
 _ALL_ENTITY_TYPES = (
     "idps",
     "groups",

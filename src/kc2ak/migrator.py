@@ -1,13 +1,12 @@
 """Read -> map -> diff -> write orchestration for groups, users, memberships,
-clients, and (milestone-2) realm roles and role assignments.
+clients, and (milestone-2) realm roles, role assignments, identity providers
+and federated links.
 
 Dry-run is the default: writes only happen when apply=True. Every write path
 is behind that flag, per
-.chief/milestone-1/_goal/02-safety-and-blast-radius.md. migrate_roles and
-migrate_role_assignments are not yet wired into cli.py -- that CLI surface
-(--only roles, the roles/idps/federated-links counts blocks) is
-milestone-2 task-3's job; this module only produces EntityResult records in
-memory for it to consume.
+.chief/milestone-1/_goal/02-safety-and-blast-radius.md. Every migrate_* here
+produces EntityResult records; cli.py owns the --only scope, the fixed
+processing order and the counts blocks that consume them.
 """
 
 from __future__ import annotations

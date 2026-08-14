@@ -138,8 +138,7 @@ def build_report(
 # (.chief/milestone-1/_contract/02-report-schema.md,
 # .chief/milestone-2/_contract/01-role-mapping.md). Framed as an exception
 # (gate unless one of these) rather than an allowlist of gating types, so an
-# unknown future `unmapped` type -- including idp_secret_missing and idp_mapper,
-# not yet produced by any migrator -- fails loud (exit 1) instead of silently
+# unknown future `unmapped` type fails loud (exit 1) instead of silently
 # defaulting to a green exit
 # (.chief/milestone-2/_contract/03-cli-and-report-extensions.md).
 _NON_GATING_UNMAPPED_TYPES = frozenset({"standard_scope_claim", "role_field"})
