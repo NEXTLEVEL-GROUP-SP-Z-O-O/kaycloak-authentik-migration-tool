@@ -11,6 +11,7 @@ from typing import Any
 from kc2ak.mappers.clients import (
     is_migratable_client,
     map_application,
+    map_grant_types,
     map_provider,
     map_redirect_uri,
     slugify,
@@ -170,20 +171,112 @@ def test_map_application_derives_slug_from_client_id() -> None:
     assert payload["provider"] == 7
 
 
+# --- grant types -------------------------------------------------------
+
+
+def _kc(**overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "clientId": "app",
+        "standardFlowEnabled": False,
+        "implicitFlowEnabled": False,
+        "directAccessGrantsEnabled": False,
+        "serviceAccountsEnabled": False,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_grant_types_standard_flow_carries_authorization_code_and_refresh() -> None:
+    # The common case. refresh_token is not widening: Keycloak issues one for
+    # the standard flow unless use.refresh.tokens is explicitly turned off.
+    assert map_grant_types(_kc(standardFlowEnabled=True)) == [
+        "authorization_code",
+        "refresh_token",
+    ]
+
+
+def test_grant_types_refresh_dropped_only_when_explicitly_disabled() -> None:
+    kc_client = _kc(standardFlowEnabled=True, attributes={"use.refresh.tokens": "false"})
+    assert map_grant_types(kc_client) == ["authorization_code"]
+
+
+def test_grant_types_absent_attribute_keeps_keycloaks_default() -> None:
+    # Absent must mean Keycloak's default (on), never "off" -- a migrated app
+    # that silently loses refresh_token cannot renew a token.
+    assert "refresh_token" in map_grant_types(_kc(standardFlowEnabled=True, attributes={}))
+
+
+def test_grant_types_hybrid_only_when_both_code_and_implicit() -> None:
+    both = map_grant_types(_kc(standardFlowEnabled=True, implicitFlowEnabled=True))
+    assert "hybrid" in both
+    assert "hybrid" not in map_grant_types(_kc(standardFlowEnabled=True))
+    assert "hybrid" not in map_grant_types(_kc(implicitFlowEnabled=True))
+
+
+def test_grant_types_service_accounts_and_direct_access() -> None:
+    kc_client = _kc(serviceAccountsEnabled=True, directAccessGrantsEnabled=True)
+    grants = map_grant_types(kc_client)
+    assert "client_credentials" in grants
+    assert "password" in grants
+
+
+def test_grant_types_client_credentials_refresh_is_off_unless_asked() -> None:
+    # Opposite default to use.refresh.tokens: Keycloak stopped issuing these
+    # for client_credentials in 12.0, so absent means off.
+    assert map_grant_types(_kc(serviceAccountsEnabled=True)) == ["client_credentials"]
+    opted_in = _kc(
+        serviceAccountsEnabled=True,
+        attributes={"client_credentials.use_refresh_token": "true"},
+    )
+    assert "refresh_token" in map_grant_types(opted_in)
+
+
+def test_grant_types_device_code_requires_the_attribute() -> None:
+    on = _kc(attributes={"oauth2.device.authorization.grant.enabled": "true"})
+    assert map_grant_types(on) == ["urn:ietf:params:oauth:grant-type:device_code"]
+    assert map_grant_types(_kc(attributes={})) == []
+
+
+def test_grant_types_empty_when_every_flow_is_off() -> None:
+    assert map_grant_types(_kc()) == []
+
+
+def test_map_provider_includes_grant_types() -> None:
+    payload = map_provider(
+        _clients()["confidential-app"],
+        secret="s",
+        authorization_flow="auth-flow",
+        invalidation_flow="inv-flow",
+    )
+    # The fixture has standard flow + direct access grants, nothing else.
+    assert payload["grant_types"] == ["authorization_code", "password", "refresh_token"]
+
+
 # --- unmapped fields ---------------------------------------------------
 
 
-def test_unmapped_includes_web_origins_and_flow_flags_and_default_scopes() -> None:
+def test_unmapped_includes_web_origins_and_default_scopes_but_not_flow_flags() -> None:
     entries = unmapped_client_fields(_clients()["confidential-app"])
     names = {e["name"] for e in entries}
     assert "webOrigins" in names
-    assert "standardFlowEnabled" in names
-    assert "directAccessGrantsEnabled" in names
-    assert "implicitFlowEnabled" not in names  # false in the fixture -- nothing lost
-    assert "serviceAccountsEnabled" not in names  # false in the fixture
     assert "defaultClientScopes" in names  # roles/basic/web-origins/acr beyond authentik's own
     assert "token_lifespans" not in names  # no lifespan attributes set in the fixture
+    # The flow flags are carried into grant_types now, so reporting them as
+    # "not carried over" would be a false entry.
+    assert "standardFlowEnabled" not in names
+    assert "directAccessGrantsEnabled" not in names
     assert all(e["type"] == "client_field" for e in entries)
+
+
+def test_unmapped_reports_ciba_which_authentik_has_no_grant_for() -> None:
+    kc_client = {"clientId": "ciba-app", "attributes": {"oidc.ciba.grant.enabled": "true"}}
+    names = {e["name"] for e in unmapped_client_fields(kc_client)}
+    assert "oidc.ciba.grant.enabled" in names
+
+
+def test_unmapped_silent_when_ciba_disabled() -> None:
+    kc_client = {"clientId": "plain", "attributes": {"oidc.ciba.grant.enabled": "false"}}
+    assert unmapped_client_fields(kc_client) == []
 
 
 def test_unmapped_empty_for_minimal_client() -> None:

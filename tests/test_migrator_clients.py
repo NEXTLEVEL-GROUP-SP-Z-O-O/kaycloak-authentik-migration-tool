@@ -256,8 +256,8 @@ def test_migrate_clients_reports_unmapped_fields_and_stays_created() -> None:
     assert result.outcome == CREATED  # unmapped never downgrades the outcome
     names = {e["name"] for e in result.unmapped}
     assert "webOrigins" in names
-    assert "standardFlowEnabled" in names
     assert "defaultClientScopes" in names
+    assert "standardFlowEnabled" not in names  # carried into grant_types now
 
 
 # --- client roles (milestone-2 task-2): reported, never written -------------

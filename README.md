@@ -195,6 +195,11 @@ Beyond the claims above, these are reported and never guessed at:
   [What it does](#what-it-does) for the `user_matching_mode` substitute.
 - **Unsupported provider types.** Reported as `CONFLICT` /
   `idp_type_unsupported`, never mapped to a near-enough type.
+- **The CIBA grant.** Keycloak's `oidc.ciba.grant.enabled` has no member in
+  authentik's `GrantTypesEnum`, so a client using it is reported rather than
+  approximated with a neighbouring grant. Every other Keycloak flow toggle —
+  standard, implicit, direct access, service accounts, device code — is carried
+  into the provider's `grant_types`.
 
 **Out of scope**, deliberately: client roles as first-class objects,
 LDAP/Kerberos user federation, authentication flows, required actions, and
@@ -320,6 +325,18 @@ building this tool, not inferred from docs or source. Versions are stated becaus
 these are version-specific observations, not permanent truths.
 
 Useful whether or not you use this tool — each of these cost real debugging time.
+
+**`grant_types` on a provider exists only from authentik 2026.5** *(observed on
+2026.5.6; absent from `OAuth2ProviderRequest` on 2024.10.5)*
+2026.5 made OAuth2 grant types selectable per provider and backfilled every
+pre-existing provider with all seven to preserve behaviour, so **an omitted
+`grant_types` is permissive, not restrictive**. A provider created through the
+API without the field comes back as `grant_types: []` and still works. Two
+consequences: writing the field can only ever *narrow* what a provider accepts,
+and `refresh_token` is a member of the enum in its own right — omit it from a
+list you do write and the application can no longer renew a token. The enum has
+no CIBA member at all. This tool always sends the field; versions below 2026.5
+ignore the unknown key, which is cheaper than version-detecting.
 
 **`recovery_email` takes `email_stage` as a query parameter, not a JSON body**
 *(authentik 2024.10.5)*

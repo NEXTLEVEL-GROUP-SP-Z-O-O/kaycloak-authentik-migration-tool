@@ -38,6 +38,28 @@ BUILTIN_CLIENT_IDS = frozenset(
 # not true.
 _AUTHENTIK_DEFAULT_SCOPES = frozenset({"email", "openid", "profile"})
 
+# authentik's GrantTypesEnum, read from /api/v3/schema/ on a live 2026.5.6
+# instance. The field does not exist below authentik 2026.5; older versions
+# ignore it, which is why it is always sent rather than version-gated -- an
+# ignored key costs nothing, a missing one silently loses the mapping.
+# Note the enum has no CIBA member: Keycloak's CIBA grant has no equivalent
+# here and is reported instead (see unmapped_client_fields).
+_GRANT_AUTHORIZATION_CODE = "authorization_code"
+_GRANT_IMPLICIT = "implicit"
+_GRANT_HYBRID = "hybrid"
+_GRANT_REFRESH_TOKEN = "refresh_token"
+_GRANT_CLIENT_CREDENTIALS = "client_credentials"
+_GRANT_PASSWORD = "password"
+_GRANT_DEVICE_CODE = "urn:ietf:params:oauth:grant-type:device_code"
+
+# Keycloak client attributes that toggle grants the client representation has
+# no boolean field for. Absent means Keycloak's own default, which differs per
+# attribute -- see map_grant_types.
+_KC_ATTR_DEVICE_CODE = "oauth2.device.authorization.grant.enabled"
+_KC_ATTR_CIBA = "oidc.ciba.grant.enabled"
+_KC_ATTR_USE_REFRESH_TOKENS = "use.refresh.tokens"
+_KC_ATTR_CC_REFRESH_TOKEN = "client_credentials.use_refresh_token"
+
 # Every one uses scope_name="openid" rather than the scope's own name:
 # task-5c confirmed live that a Keycloak *default* client scope's claims are
 # present unconditionally, regardless of what the token request asks for,
@@ -150,10 +172,71 @@ def map_provider(
         "redirect_uris": [map_redirect_uri(uri) for uri in kc_client.get("redirectUris") or []],
         "authorization_flow": authorization_flow,
         "invalidation_flow": invalidation_flow,
+        "grant_types": map_grant_types(kc_client),
     }
     if secret is not None:
         payload["client_secret"] = secret
     return payload
+
+
+def map_grant_types(kc_client: dict[str, Any]) -> list[str]:
+    """Translate Keycloak's per-client flow toggles into authentik's
+    `grant_types` list, in enum order.
+
+    authentik defaults an omitted `grant_types` to *permissive* -- 2026.5
+    backfilled every pre-existing provider with all seven to preserve
+    behaviour. So writing this list can only ever narrow what a provider
+    allows, which is the point: it narrows it to what the source client
+    actually declared. That also makes `refresh_token` load-bearing. Dropping
+    it would leave a migrated app unable to renew a token, so it is included
+    whenever Keycloak itself would issue one.
+
+    Keycloak's refresh-token switches live in attributes with opposite
+    defaults: `use.refresh.tokens` is on unless explicitly "false", while
+    `client_credentials.use_refresh_token` is off unless explicitly "true"
+    (Keycloak stopped issuing refresh tokens for client_credentials in 12.0).
+    Both are read as "absent means Keycloak's default", never as "absent means
+    off" -- so a misremembered attribute name degrades to Keycloak's own
+    default rather than silently stripping a grant.
+    """
+    attributes = kc_client.get("attributes") or {}
+    standard = bool(kc_client.get("standardFlowEnabled"))
+    implicit = bool(kc_client.get("implicitFlowEnabled"))
+    direct_access = bool(kc_client.get("directAccessGrantsEnabled"))
+    service_accounts = bool(kc_client.get("serviceAccountsEnabled"))
+
+    grants: list[str] = []
+    if standard:
+        grants.append(_GRANT_AUTHORIZATION_CODE)
+    if implicit:
+        grants.append(_GRANT_IMPLICIT)
+    # Keycloak has no hybrid toggle of its own: the hybrid flow is reachable
+    # exactly when a client permits both an authorization code and an
+    # implicit response type, so it is derived rather than widened.
+    if standard and implicit:
+        grants.append(_GRANT_HYBRID)
+    if service_accounts:
+        grants.append(_GRANT_CLIENT_CREDENTIALS)
+    if direct_access:
+        grants.append(_GRANT_PASSWORD)
+    if attributes.get(_KC_ATTR_DEVICE_CODE) == "true":
+        grants.append(_GRANT_DEVICE_CODE)
+
+    # Ordered after the grants that earn it so the list reads in enum order
+    # once inserted; see the refresh-token reasoning above.
+    user_flow_refresh = (standard or direct_access) and attributes.get(
+        _KC_ATTR_USE_REFRESH_TOKENS
+    ) != "false"
+    cc_refresh = service_accounts and attributes.get(_KC_ATTR_CC_REFRESH_TOKEN) == "true"
+    if user_flow_refresh or cc_refresh:
+        grants.insert(
+            grants.index(_GRANT_CLIENT_CREDENTIALS)
+            if _GRANT_CLIENT_CREDENTIALS in grants
+            else len(grants),
+            _GRANT_REFRESH_TOKEN,
+        )
+
+    return grants
 
 
 def map_application(client_id: str, provider_pk: int, name: str | None = None) -> dict[str, Any]:
@@ -230,12 +313,14 @@ def unmapped_client_fields(kc_client: dict[str, Any]) -> list[dict[str, str]]:
 
     if kc_client.get("webOrigins"):
         add("webOrigins")
-    for flag in ("standardFlowEnabled", "implicitFlowEnabled", "directAccessGrantsEnabled"):
-        if kc_client.get(flag):
-            add(flag)
-    if kc_client.get("serviceAccountsEnabled"):
-        add("serviceAccountsEnabled")
     attributes = kc_client.get("attributes") or {}
+    # The four flow flags and the device-code attribute used to be listed here
+    # as "not carried over"; map_grant_types now carries all five into
+    # authentik's `grant_types`, so reporting them would be false. CIBA is the
+    # one that stays: authentik's GrantTypesEnum has no member for it, so the
+    # grant is genuinely lost and an operator has to know.
+    if attributes.get(_KC_ATTR_CIBA) == "true":
+        add(_KC_ATTR_CIBA)
     if any(key in attributes for key in _TOKEN_LIFESPAN_ATTRS):
         add("token_lifespans")
     extra_scopes = set(kc_client.get("defaultClientScopes") or []) - _AUTHENTIK_DEFAULT_SCOPES
