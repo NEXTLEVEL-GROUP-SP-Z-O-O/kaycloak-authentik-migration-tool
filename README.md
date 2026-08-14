@@ -1,16 +1,23 @@
 # kc2ak — Keycloak → Authentik migration tool
 
-A command-line tool that migrates users, groups, group memberships, and OAuth/OIDC
-clients from a [Keycloak](https://www.keycloak.org/) realm into
+A command-line tool that migrates users, groups, group memberships, realm roles,
+identity providers, and OAuth/OIDC clients from a
+[Keycloak](https://www.keycloak.org/) realm into
 [Authentik](https://goauthentik.io/).
 
-> **Status: implemented, pending final acceptance.** Users, groups, memberships,
-> clients, protocol mappers, reporting, and recovery mail all work and are covered
-> by 171 tests. Each piece has been verified against live Keycloak and Authentik
-> instances — including a real OIDC flow through a migrated client on its original
-> `clientId` and secret. The one check still outstanding is a single `kc2ak
-> migrate` run against both services simultaneously, which the development host
-> cannot currently hold in memory (see [Resource note](#resource-note)).
+> **Status: implemented and verified end to end.** All seven entity kinds,
+> protocol mappers, reporting, and recovery mail work and are covered by 295
+> tests. Every piece has been verified against live Keycloak and Authentik
+> instances, including a real OIDC login through a migrated client on its original
+> `clientId` and secret, and a real login through a migrated identity provider
+> landing on the migrated account. A single full-scope run — all seven kinds, both
+> services up, from a wiped Authentik — reconciles across dry run, `--apply`, and
+> re-run, with the re-run creating nothing.
+>
+> Two checks remain open, both needing infrastructure this project does not have:
+> no end-to-end **SAML** login has been completed (field-level evidence only; the
+> OIDC path is fully verified), and the `microsoft` → `azuread` provider mapping
+> has never been confirmed against a real Microsoft provider.
 
 ## What it does
 
@@ -22,9 +29,38 @@ objects in Authentik:
 | Users | → | Users |
 | Groups | → | Groups |
 | Group memberships | → | Group memberships |
+| Realm roles | → | Groups (marked `kc2ak_origin`) |
+| Role assignments | → | Group memberships |
+| Identity providers (OIDC / SAML) | → | OAuth / SAML Sources |
+| Federated identity links | → | Source `user_matching_mode` (see below) |
 | Clients (OIDC) | → | OAuth2/OIDC Providers + Applications |
 
-Migration runs in dependency order: groups → users → memberships → applications.
+Migration runs in a fixed dependency order, enforced regardless of the order
+`--only` lists them in:
+
+```
+idps → groups → roles → users → memberships → role assignments
+    → federated links → clients
+```
+
+Sources precede links; roles follow groups so a name collision is detectable;
+assignments and links follow users. Role assignments are not a separate `--only`
+value — they are part of `roles`, which is why the order has eight steps and
+`--only` has seven values.
+
+**Authentik has no separate role object**, so a Keycloak realm role becomes a
+group carrying `attributes.kc2ak_origin`, which lets a re-run tell a migrated role
+from a migrated group. Built-in roles are excluded. Composite roles and roles
+whose name collides with an existing group are reported as conflicts, never
+approximated. Client roles are read and reported, never written.
+
+**Federated identity links cannot be written.** Authentik's
+`POST /sources/user_connections/{oauth,saml}/` returns `405` on every version —
+these objects are only ever created by the flow executor during a real login. The
+tool instead sets `user_matching_mode` on the migrated source
+(`--idp-user-matching`, default `username_link`), so a returning user lands on
+their migrated account rather than a duplicate. Links whose source was not
+migrated are reported as conflicts.
 
 ## Design decisions
 
@@ -33,9 +69,19 @@ would create. Nothing is written to Authentik without `--apply`.
 
 **Matching is by natural key.** A user counts as already migrated only when
 **both `username` and `email` match**; groups match on `name`, clients on
-`clientId`. If an object already exists in Authentik it is skipped and listed in
-the report — existing data is never modified unless you pass `--update-existing`,
-which switches matched objects to a PATCH.
+`clientId`, identity provider sources on `slug` (derived from the Keycloak
+`alias`, and matched type-agnostically so an OIDC and a SAML provider cannot both
+claim it), and realm roles on the group `name` they map to. If an object already
+exists in Authentik it is skipped and listed in the report — existing data is
+never modified unless you pass `--update-existing`, which switches matched
+objects to a PATCH.
+
+Because a role and a group both land in Authentik's group namespace, a role only
+matches a group that carries `attributes.kc2ak_origin == "realm_role"`. A name
+collision with a group of any other origin is a conflict, not a match — and
+collision detection covers groups **this same run** will create, not just those
+already live, so a dry run cannot promise a clean plan that `--apply` then
+contradicts.
 
 Partial matches are reported, never guessed at. A Keycloak user whose username
 collides with a different Authentik account is rejected by Authentik (`username`
@@ -136,6 +182,24 @@ run rather than signalling something realm-specific to review.
 
 Operators will see these on every run and should expect them.
 
+Beyond the claims above, these are reported and never guessed at:
+
+- **Composite roles.** Authentik groups do not nest role semantics the way
+  Keycloak composites do, so a composite is reported as `CONFLICT` /
+  `composite_role_unsupported` rather than flattened into its members.
+- **Client roles.** Read once per client and reported as `unmapped`; they have no
+  Authentik equivalent and are never written.
+- **Identity provider secrets.** Not readable from Keycloak — supply them with
+  `--idp-secrets` or the source is created disabled.
+- **Per-user federated links.** Not writable through Authentik's API at all; see
+  [What it does](#what-it-does) for the `user_matching_mode` substitute.
+- **Unsupported provider types.** Reported as `CONFLICT` /
+  `idp_type_unsupported`, never mapped to a near-enough type.
+
+**Out of scope**, deliberately: client roles as first-class objects,
+LDAP/Kerberos user federation, authentication flows, required actions, and
+multi-realm runs. One realm per invocation.
+
 ## Usage
 
 ```bash
@@ -147,6 +211,9 @@ kc2ak migrate --realm myrealm \
 # Users and groups only — no clients, so no flows needed.
 kc2ak migrate --realm myrealm --only groups,users,memberships
 
+# Roles too. They become groups; assignments become memberships.
+kc2ak migrate --realm myrealm --only groups,roles,users,memberships
+
 # Apply it.
 kc2ak migrate --realm myrealm --apply \
   --authorization-flow default-provider-authorization-explicit-consent \
@@ -157,6 +224,48 @@ kc2ak migrate --realm myrealm --apply \
   --send-recovery-email --email-stage <uuid> \
   --authorization-flow … --invalidation-flow …
 ```
+
+`--only` accepts any subset of `idps`, `groups`, `roles`, `users`, `memberships`,
+`federated-links`, `clients`. Nothing outside the selection is written.
+
+### Identity providers
+
+Sources need their own flows, and their secrets cannot be read out of Keycloak:
+
+```bash
+# Migrate identity providers with their secrets.
+kc2ak migrate --realm myrealm --apply --only idps \
+  --idp-secrets ./idp-secrets.json \
+  --authentication-flow default-source-authentication \
+  --enrollment-flow default-source-enrollment \
+  --pre-authentication-flow default-source-pre-authentication
+```
+
+`--idp-secrets` takes a JSON file mapping IdP alias → secret. It must not be
+world-readable. Keycloak returns `**********` for a stored secret rather than the
+value, and the tool treats that as **absent**, never as a secret — so without this
+file a source is created **disabled** and reported, rather than created broken.
+
+The flow flags matter for the same reason: a source created without
+`--authentication-flow` and `--enrollment-flow` renders a login button and then
+fails mid-flow. Missing either one disables the source and reports
+`idp_flow_missing`. `--pre-authentication-flow` is required by SAML sources.
+
+Any run that creates a disabled source says so on stdout, not only in the report.
+
+Supported Keycloak `providerId` values are whitelisted: `saml`, plus the OAuth
+family `oidc`, `keycloak-oidc`, `google`, `github`, `gitlab`, `facebook`,
+`twitter`, `okta`, `apple`, `discord`, `reddit`, `twitch`, and `microsoft`
+(→ authentik's `azuread`). Anything else — `linkedin-openid-connect`, for
+instance — is reported as `CONFLICT` / `idp_type_unsupported`, never approximated
+with a near-enough type.
+
+### Updating existing objects
+
+`--update-existing` switches matched objects from skip to PATCH. An update sends
+**only what the run knows**: any field this invocation cannot supply is omitted
+rather than defaulted, so a thinner update never disables a working source or
+overwrites a live secret with a placeholder.
 
 One realm per run. Endpoints and credentials for both systems are read from the
 environment.
