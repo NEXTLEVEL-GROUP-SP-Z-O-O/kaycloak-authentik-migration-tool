@@ -487,6 +487,12 @@ time, and `providerId: "linkedin"` aborts the entire server boot rather than
 being dropped — `GET /admin/serverinfo`'s `providers.social.providers`
 confirms `linkedin-openid-connect` is the one actually registered.
 
+The 2026.5.6 sweep added one more: `confidential-app` carries a back-channel
+*and* a front-channel logout URL plus a `post.logout.redirect.uris` entry, so a
+run exercises the logout mapping and the report of the channel authentik cannot
+hold. It is the only client with an explicit post-logout value — the other two
+rely on Keycloak's `+` default, which is itself the case worth covering.
+
 Task-2 added one more case: the `noemail` user carries an explicit
 `realmRoles: [offline_access]` assignment, since a realm-file-imported user
 otherwise receives no built-in role assignment at all — the built-in-role
@@ -516,11 +522,18 @@ curl -H "Authorization: Bearer kc2ak-local-bootstrap-token" \
 ### Resource note
 
 The full rig (Keycloak, Authentik server + worker, Postgres, Redis) needs
-roughly 2-3 GB free inside the Docker VM. Docker Desktop's default 4 GB
-allocation may not cover that once other local stacks are also running.
-Symptom: Keycloak exits with code `137` (`docker inspect` shows
-`OOMKilled: true`). Fix: raise Docker Desktop's memory allocation (Settings →
-Resources), or stop other stacks while the rig is up.
+roughly 3-4 GB free inside the Docker VM — more since the Keycloak 26 and
+authentik 2026.5 bumps. Docker Desktop's default 4 GB allocation may not cover
+that once other local stacks are also running. Symptom: Keycloak exits with code
+`137` (`docker inspect` shows `OOMKilled: true`). Fix: raise Docker Desktop's
+memory allocation (Settings → Resources), or stop other stacks while the rig is
+up.
+
+A *different* symptom with the same shape: `Terminating due to
+java.lang.OutOfMemoryError: Metaspace` in the Keycloak log, after the server
+looks like it started. That is the JVM's metaspace ceiling, not the container's
+memory limit, and it is set by `JAVA_OPTS_APPEND` in `docker-compose.yml` — 26
+needs 256 MB where 25 ran in 128 MB.
 
 Tear down with `docker compose down -v`.
 
