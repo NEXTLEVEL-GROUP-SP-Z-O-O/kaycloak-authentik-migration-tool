@@ -5,26 +5,21 @@ identity providers, and OAuth/OIDC clients from a
 [Keycloak](https://www.keycloak.org/) realm into
 [Authentik](https://goauthentik.io/).
 
-> **Status: implemented and verified end to end.** All seven entity kinds,
-> protocol mappers, reporting, and recovery mail work and are covered by 295
-> tests. Every piece has been verified against live Keycloak and Authentik
-> instances, including a real OIDC login through a migrated client on its original
-> `clientId` and secret, and a real login through a migrated identity provider
-> landing on the migrated account. A single full-scope run — all seven kinds, both
-> services up, from a wiped Authentik — reconciles across dry run, `--apply`, and
-> re-run, with the re-run creating nothing.
->
-> **Verified against authentik 2026.5.6** (and Keycloak 25.0.6): the full
-> seven-kind cycle above was re-run on a wiped 2026.5.6 rig after the version
-> bump, with 26 entities reconciling identically across all three runs.
+> **Status: implemented and verified end to end**, against **Keycloak 26.7.1 →
+> authentik 2026.5.6**. All seven entity kinds, protocol mappers, reporting and
+> recovery mail work, covered by 319 tests. A full-scope run — all seven kinds,
+> both services up, from a wiped Authentik — reconciles across dry run,
+> `--apply` and re-run at 26 entities, with the re-run creating nothing.
 >
 > Open checks:
 > - **No end-to-end SAML login** has ever been completed — field-level evidence
 >   only.
-> - **The OIDC logins were verified on 2024.10.5**, not on the current target.
->   A real login through a migrated client and through a migrated identity
->   provider both completed then; the 2026.5.6 verification covers API writes and
->   read-backs, which does not prove a browser flow still completes.
+> - **The browser logins were verified on the older pair** (Keycloak 25.0.6 →
+>   authentik 2024.10.5): a real OIDC login through a migrated client on its
+>   original `clientId` and secret, and a real login through a migrated identity
+>   provider landing on the migrated account. Verification on the current pair
+>   covers API reads, writes and read-backs, which does not prove a browser flow
+>   still completes.
 > - **`microsoft` → `azuread`** is schema-confirmed on 2026.5.6 but still
 >   untested against a real Microsoft provider.
 
@@ -203,7 +198,15 @@ Beyond the claims above, these are reported and never guessed at:
 - **Per-user federated links.** Not writable through Authentik's API at all; see
   [What it does](#what-it-does) for the `user_matching_mode` substitute.
 - **Unsupported provider types.** Reported as `CONFLICT` /
-  `idp_type_unsupported`, never mapped to a near-enough type.
+  `idp_type_unsupported`, never mapped to a near-enough type. The whitelist was
+  checked against Keycloak 26.7.1's own provider list and authentik 2026.5.6's
+  `ProviderTypeEnum`: every provider stock Keycloak offers *and* authentik can
+  represent is covered. Keycloak's `bitbucket`, `paypal`, `stackoverflow`,
+  `openshift-v4`, `kubernetes`, `oauth2`, `jwt-authorization-grant` and
+  `linkedin-openid-connect` have no authentik equivalent and are reported.
+  Five whitelist entries (`apple`, `discord`, `okta`, `reddit`, `twitch`) are
+  authentik-side names stock Keycloak has never offered; they can only match a
+  Keycloak extension and are unverified.
 - **The CIBA grant.** Keycloak's `oidc.ciba.grant.enabled` has no member in
   authentik's `GrantTypesEnum`, so a client using it is reported rather than
   approximated with a neighbouring grant. Every other Keycloak flow toggle —
@@ -347,10 +350,10 @@ documentation implies. Each was observed against a running instance while
 building this tool, not inferred from docs or source. Versions are stated because
 these are version-specific observations, not permanent truths.
 
-The current verification target is **authentik 2026.5.6** and **Keycloak 25.0.6**
-— the versions the test rig pins. Observations labelled 2024.10.5 were made on
-the earlier target and have not all been re-checked individually; the full
-migration itself has been re-verified end to end on 2026.5.6.
+The current verification target is **authentik 2026.5.6** and **Keycloak 26.7.1**
+— the versions the test rig pins. Observations labelled with an earlier version
+were made on a previous target and have not all been re-checked individually; the
+full migration itself has been re-verified end to end on the current pair.
 
 Useful whether or not you use this tool — each of these cost real debugging time.
 
@@ -365,6 +368,24 @@ and `refresh_token` is a member of the enum in its own right — omit it from a
 list you do write and the application can no longer renew a token. The enum has
 no CIBA member at all. This tool always sends the field; versions below 2026.5
 ignore the unknown key, which is cheaper than version-detecting.
+
+**Keycloak 26 renamed the bootstrap admin variables and needs more metaspace**
+*(Keycloak 26.7.1)*
+`KEYCLOAK_ADMIN` / `KEYCLOAK_ADMIN_PASSWORD` became
+`KC_BOOTSTRAP_ADMIN_USERNAME` / `KC_BOOTSTRAP_ADMIN_PASSWORD`. The old pair is
+**ignored silently** — the container starts, serves the realm, and every Admin
+API call 401s because no admin user was ever created. Separately, 26 does not fit
+in the 128 MB metaspace that held 25: it dies with `Terminating due to
+java.lang.OutOfMemoryError: Metaspace` *after* the server appears to start,
+during realm import. The rig now sets 256 MB.
+
+**Six identity-provider flags left the list representation** *(Keycloak 26.7.1)*
+`addReadTokenRoleOnCreate`, `authenticateByDefault`, `linkOnly`, `storeToken`,
+`trustEmail` and `updateProfileFirstLoginMode` no longer appear in
+`GET /identity-provider/instances`, and did not move into `config`. A new `types`
+array (`["USER_AUTHENTICATION"]`) appears instead. This tool reads none of them,
+so nothing changed for it — but anything that does read them from a list
+response will silently see `None` on 26.
 
 **`post.logout.redirect.uris` uses two sentinels, not just a URL list**
 *(Keycloak 25.0.6)*

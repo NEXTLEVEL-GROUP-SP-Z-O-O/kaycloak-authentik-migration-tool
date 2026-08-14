@@ -43,9 +43,28 @@ PLACEHOLDER_SECRET = "kc2ak-no-secret-supplied"  # noqa: S105
 # Keycloak providerId with an exact equivalent. Anything else is CONFLICT /
 # idp_type_unsupported: mapping onto generic "openidconnect" would mean
 # inventing authorization_url/access_token_url/profile_url, which fails at
-# login for real people. "microsoft" -> "azuread" is the one non-identical
-# pair and, per the contract, still needs live confirmation beyond this
-# milestone's seed (it has no Microsoft IdP case).
+# login for real people.
+#
+# Checked against Keycloak 26.7.1's own /admin/serverinfo provider list and
+# authentik 2026.5.6's ProviderTypeEnum. Every provider **stock Keycloak
+# offers** that authentik can represent is here: oidc, keycloak-oidc, saml,
+# google, github, gitlab, facebook, twitter, microsoft. Nothing is missing --
+# Keycloak's remaining stock providers (bitbucket, paypal, stackoverflow,
+# openshift-v4, kubernetes, oauth2, jwt-authorization-grant,
+# linkedin-openid-connect) have no authentik member at all.
+#
+# `apple`, `discord`, `okta`, `reddit` and `twitch` are **speculative**: they
+# are authentik enum members that stock Keycloak has never offered as a
+# providerId, added by reading authentik's side of the table. They can only
+# ever match a Keycloak extension, and if one does match, the resulting source
+# gets no endpoint URLs. Kept because removing them would change behaviour for
+# anyone running such an extension; named here so the next reader does not
+# mistake them for verified pairs.
+#
+# "microsoft" -> "azuread" is the one non-identical pair. The member is
+# confirmed present in 2026.5.6's enum, but no live login through a real
+# Microsoft provider has ever been performed. authentik 2026.5 also added
+# `entraid` as the newer name for the same source; this still writes azuread.
 _OAUTH_PROVIDER_TYPES = {
     "oidc": "openidconnect",
     "keycloak-oidc": "openidconnect",
