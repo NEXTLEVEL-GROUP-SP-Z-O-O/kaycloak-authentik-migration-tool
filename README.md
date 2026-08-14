@@ -200,6 +200,48 @@ Beyond the claims above, these are reported and never guessed at:
 LDAP/Kerberos user federation, authentication flows, required actions, and
 multi-realm runs. One realm per invocation.
 
+## Configuration
+
+Endpoints and credentials come from the **environment**, never from CLI flags, so
+they do not land in shell history or in `ps` output. There is no `--url` or
+`--token` option and that is deliberate.
+
+| Variable | Required | What it is |
+|---|---|---|
+| `KC_URL` | yes | Keycloak base URL, e.g. `https://keycloak.example.com` |
+| `AK_URL` | yes | Authentik base URL, e.g. `https://authentik.example.com` |
+| `AK_TOKEN` | yes | Authentik API token for an admin account |
+| `KC_REALM_ADMIN` | one pair | Keycloak admin username |
+| `KC_ADMIN_PASSWORD` | one pair | that admin's password |
+| `KC_CLIENT_ID` | one pair | service-account client, for `client_credentials` |
+| `KC_CLIENT_SECRET` | one pair | that client's secret |
+
+Keycloak needs **one** of the two credential pairs. Supply neither and the run
+stops with `Keycloak credentials missing: set KC_REALM_ADMIN + KC_ADMIN_PASSWORD,
+or KC_CLIENT_ID + KC_CLIENT_SECRET`.
+
+**`.env` is not loaded automatically.** The file in this repo is read by
+`docker-compose` for the [local test rig](#local-test-environment), not by
+`kc2ak`. Running from this directory with a populated `.env` still fails with
+`KC_URL is not set`. Export it yourself:
+
+```bash
+set -a; source .env; set +a
+uv run kc2ak migrate --realm myrealm --only groups
+```
+
+Or pass the variables for a single run:
+
+```bash
+KC_URL=https://keycloak.example.com \
+KC_REALM_ADMIN=admin KC_ADMIN_PASSWORD=… \
+AK_URL=https://authentik.example.com AK_TOKEN=… \
+uv run kc2ak migrate --realm myrealm
+```
+
+No Docker is needed to *run* the tool — the compose stack only exists to provide
+a Keycloak and an Authentik to migrate between while developing.
+
 ## Usage
 
 ```bash
@@ -267,8 +309,8 @@ with a near-enough type.
 rather than defaulted, so a thinner update never disables a working source or
 overwrites a live secret with a placeholder.
 
-One realm per run. Endpoints and credentials for both systems are read from the
-environment.
+One realm per run. Endpoints and credentials come from the environment — see
+[Configuration](#configuration).
 
 ## API notes
 
