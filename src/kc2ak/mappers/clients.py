@@ -59,6 +59,18 @@ _KC_ATTR_DEVICE_CODE = "oauth2.device.authorization.grant.enabled"
 _KC_ATTR_CIBA = "oidc.ciba.grant.enabled"
 _KC_ATTR_USE_REFRESH_TOKENS = "use.refresh.tokens"
 _KC_ATTR_CC_REFRESH_TOKEN = "client_credentials.use_refresh_token"
+# Confirmed live against Keycloak 25.0.6 by writing them through the admin API
+# and reading the client back -- not taken from memory or docs.
+_KC_ATTR_BACKCHANNEL_LOGOUT_URL = "backchannel.logout.url"
+_KC_ATTR_FRONTCHANNEL_LOGOUT_URL = "frontchannel.logout.url"
+_KC_ATTR_POST_LOGOUT_REDIRECT_URIS = "post.logout.redirect.uris"
+
+# Keycloak joins multi-valued client attributes with "##". For post-logout
+# redirect URIs it also defines two sentinels: "+" reuses the client's own
+# redirect URIs, "-" allows none.
+_KC_MULTIVALUE_SEPARATOR = "##"
+_KC_POST_LOGOUT_SAME_AS_REDIRECTS = "+"
+_KC_POST_LOGOUT_NONE = "-"
 
 # Every one uses scope_name="openid" rather than the scope's own name:
 # task-5c confirmed live that a Keycloak *default* client scope's claims are
@@ -169,11 +181,13 @@ def map_provider(
         "name": kc_client.get("name") or client_id,
         "client_id": client_id,
         "client_type": "public" if kc_client.get("publicClient", False) else "confidential",
-        "redirect_uris": [map_redirect_uri(uri) for uri in kc_client.get("redirectUris") or []],
+        "redirect_uris": [map_redirect_uri(uri) for uri in kc_client.get("redirectUris") or []]
+        + map_post_logout_redirect_uris(kc_client),
         "authorization_flow": authorization_flow,
         "invalidation_flow": invalidation_flow,
         "grant_types": map_grant_types(kc_client),
     }
+    payload.update(map_logout(kc_client))
     if secret is not None:
         payload["client_secret"] = secret
     return payload
@@ -237,6 +251,56 @@ def map_grant_types(kc_client: dict[str, Any]) -> list[str]:
         )
 
     return grants
+
+
+def map_logout(kc_client: dict[str, Any]) -> dict[str, str]:
+    """Keycloak's logout channel and URL as authentik's `logout_method` /
+    `logout_uri` (both added in authentik 2026.5).
+
+    Keycloak can hold a back-channel and a front-channel logout URL at the
+    same time; authentik holds one method and one URL. The client's own
+    `frontchannelLogout` boolean is the discriminator -- it is exactly the
+    switch Keycloak itself uses to decide which channel a logout goes
+    through -- so this picks the URL for the selected channel rather than
+    guessing between two populated fields. The unselected channel's URL, if
+    Keycloak also has one, is reported by `unmapped_client_fields`.
+
+    Returns an empty dict when the selected channel has no URL: authentik's
+    `logout_method` alone carries no information without somewhere to send
+    the logout, and writing a method with no URI would be a bare default.
+    """
+    attributes = kc_client.get("attributes") or {}
+    frontchannel = bool(kc_client.get("frontchannelLogout"))
+    attr = _KC_ATTR_FRONTCHANNEL_LOGOUT_URL if frontchannel else _KC_ATTR_BACKCHANNEL_LOGOUT_URL
+    url = attributes.get(attr)
+    if not url:
+        return {}
+    return {
+        "logout_method": "frontchannel" if frontchannel else "backchannel",
+        "logout_uri": url,
+    }
+
+
+def map_post_logout_redirect_uris(kc_client: dict[str, Any]) -> list[dict[str, str]]:
+    """Keycloak's `post.logout.redirect.uris` as authentik redirect-URI
+    entries carrying `redirect_uri_type: "logout"` (the second member of
+    RedirectURITypeEnum, added in 2026.5).
+
+    Keycloak's two sentinels are honoured rather than treated as URLs: "+"
+    means "the same URIs this client already redirects to", so it expands to
+    exactly those, and "-" means none. Anything else is a "##"-separated
+    list, translated through the same wildcard rules as an authorization
+    redirect URI.
+    """
+    attributes = kc_client.get("attributes") or {}
+    raw = (attributes.get(_KC_ATTR_POST_LOGOUT_REDIRECT_URIS) or "").strip()
+    if not raw or raw == _KC_POST_LOGOUT_NONE:
+        return []
+    if raw == _KC_POST_LOGOUT_SAME_AS_REDIRECTS:
+        sources = list(kc_client.get("redirectUris") or [])
+    else:
+        sources = [part for part in raw.split(_KC_MULTIVALUE_SEPARATOR) if part]
+    return [{**map_redirect_uri(uri), "redirect_uri_type": "logout"} for uri in sources]
 
 
 def map_application(client_id: str, provider_pk: int, name: str | None = None) -> dict[str, Any]:
@@ -321,6 +385,16 @@ def unmapped_client_fields(kc_client: dict[str, Any]) -> list[dict[str, str]]:
     # grant is genuinely lost and an operator has to know.
     if attributes.get(_KC_ATTR_CIBA) == "true":
         add(_KC_ATTR_CIBA)
+    # authentik holds one logout channel; Keycloak can hold both. map_logout
+    # carries the one frontchannelLogout selects, so the other is genuinely
+    # lost whenever Keycloak has a URL for it too.
+    unselected = (
+        _KC_ATTR_BACKCHANNEL_LOGOUT_URL
+        if kc_client.get("frontchannelLogout")
+        else _KC_ATTR_FRONTCHANNEL_LOGOUT_URL
+    )
+    if attributes.get(unselected) and map_logout(kc_client):
+        add(unselected)
     if any(key in attributes for key in _TOKEN_LIFESPAN_ATTRS):
         add("token_lifespans")
     extra_scopes = set(kc_client.get("defaultClientScopes") or []) - _AUTHENTIK_DEFAULT_SCOPES

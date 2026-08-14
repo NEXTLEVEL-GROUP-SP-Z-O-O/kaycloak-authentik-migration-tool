@@ -12,6 +12,8 @@ from kc2ak.mappers.clients import (
     is_migratable_client,
     map_application,
     map_grant_types,
+    map_logout,
+    map_post_logout_redirect_uris,
     map_provider,
     map_redirect_uri,
     slugify,
@@ -401,3 +403,79 @@ def test_standard_email_copy_omits_email_verified() -> None:
     assert "email_verified" not in email["expression"]
     assert email["expression"] == "return {'email': user.email}"
     assert {e["name"] for e in unmapped} == {"email_verified"}
+
+
+# --- logout (authentik 2026.5 fields) ---------------------------------------
+
+
+def test_logout_backchannel_is_the_default_channel() -> None:
+    kc_client = _kc(attributes={"backchannel.logout.url": "https://a/blogout"})
+    assert map_logout(kc_client) == {
+        "logout_method": "backchannel",
+        "logout_uri": "https://a/blogout",
+    }
+
+
+def test_logout_frontchannel_flag_selects_the_other_url() -> None:
+    kc_client = _kc(
+        frontchannelLogout=True,
+        attributes={
+            "frontchannel.logout.url": "https://a/flogout",
+            "backchannel.logout.url": "https://a/blogout",
+        },
+    )
+    assert map_logout(kc_client) == {
+        "logout_method": "frontchannel",
+        "logout_uri": "https://a/flogout",
+    }
+
+
+def test_logout_omitted_entirely_when_the_selected_channel_has_no_url() -> None:
+    # A method with nowhere to send the logout is a bare default, not data.
+    assert map_logout(_kc(attributes={"frontchannel.logout.url": "https://a/f"})) == {}
+    assert map_logout(_kc()) == {}
+
+
+def test_unmapped_reports_the_logout_channel_authentik_cannot_hold() -> None:
+    kc_client = _kc(
+        attributes={
+            "backchannel.logout.url": "https://a/blogout",
+            "frontchannel.logout.url": "https://a/flogout",
+        }
+    )
+    names = {e["name"] for e in unmapped_client_fields(kc_client)}
+    assert "frontchannel.logout.url" in names  # backchannel is the one carried
+
+
+def test_post_logout_plus_sentinel_expands_to_the_clients_redirect_uris() -> None:
+    kc_client = _kc(
+        redirectUris=["https://a/cb", "https://a/*"],
+        attributes={"post.logout.redirect.uris": "+"},
+    )
+    entries = map_post_logout_redirect_uris(kc_client)
+    assert [e["redirect_uri_type"] for e in entries] == ["logout", "logout"]
+    assert entries[0]["url"] == "https://a/cb"
+    assert entries[1]["matching_mode"] == "regex"  # wildcard translated, not literal
+
+
+def test_post_logout_minus_sentinel_and_absent_mean_none() -> None:
+    assert map_post_logout_redirect_uris(_kc(attributes={"post.logout.redirect.uris": "-"})) == []
+    assert map_post_logout_redirect_uris(_kc()) == []
+
+
+def test_post_logout_explicit_list_is_hash_separated() -> None:
+    kc_client = _kc(attributes={"post.logout.redirect.uris": "https://a/x##https://a/y"})
+    assert [e["url"] for e in map_post_logout_redirect_uris(kc_client)] == [
+        "https://a/x",
+        "https://a/y",
+    ]
+
+
+def test_provider_redirect_uris_carry_both_authorization_and_logout_entries() -> None:
+    kc_client = _kc(
+        redirectUris=["https://a/cb"],
+        attributes={"post.logout.redirect.uris": "https://a/after"},
+    )
+    payload = map_provider(kc_client, None, authorization_flow="f", invalidation_flow="f")
+    types = [u.get("redirect_uri_type") for u in payload["redirect_uris"]]
+    assert types == [None, "logout"]  # authorization entries keep authentik's default

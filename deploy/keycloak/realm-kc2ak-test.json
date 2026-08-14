@@ -355,7 +355,12 @@
             "claim.value": "probe-value"
           }
         }
-      ]
+      ],
+      "attributes": {
+        "backchannel.logout.url": "https://app.example.com/blogout",
+        "frontchannel.logout.url": "https://app.example.com/flogout",
+        "post.logout.redirect.uris": "https://app.example.com/after"
+      }
     },
     {
       "id": "33333333-0000-0000-0000-000000000002",

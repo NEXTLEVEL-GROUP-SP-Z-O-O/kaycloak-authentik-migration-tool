@@ -18,11 +18,15 @@ identity providers, and OAuth/OIDC clients from a
 > seven-kind cycle above was re-run on a wiped 2026.5.6 rig after the version
 > bump, with 26 entities reconciling identically across all three runs.
 >
-> One check remains open: no end-to-end **SAML** login has been completed
-> (field-level evidence only; the OIDC path is fully verified, through both a
-> migrated client and a migrated identity provider). The `microsoft` → `azuread`
-> mapping is now schema-confirmed on 2026.5.6 but still untested against a real
-> Microsoft provider.
+> Open checks:
+> - **No end-to-end SAML login** has ever been completed — field-level evidence
+>   only.
+> - **The OIDC logins were verified on 2024.10.5**, not on the current target.
+>   A real login through a migrated client and through a migrated identity
+>   provider both completed then; the 2026.5.6 verification covers API writes and
+>   read-backs, which does not prove a browser flow still completes.
+> - **`microsoft` → `azuread`** is schema-confirmed on 2026.5.6 but still
+>   untested against a real Microsoft provider.
 
 ## What it does
 
@@ -213,6 +217,12 @@ Beyond the claims above, these are reported and never guessed at:
 - **Non-standard SAML name ID formats.** A `nameIDPolicyFormat` outside
   authentik's six-member `SAMLNameIDPolicyEnum` is reported and left to
   authentik's default; sending it would be rejected outright.
+- **The second logout channel.** Keycloak can hold a back-channel *and* a
+  front-channel logout URL at once; authentik holds one `logout_method` and one
+  `logout_uri`. The client's own `frontchannelLogout` boolean picks which one is
+  carried — it is the switch Keycloak itself uses — and the other URL, if set, is
+  reported. A client with only the unselected channel populated gets no logout
+  fields at all rather than a method pointing nowhere.
 
 **Out of scope**, deliberately: client roles as first-class objects,
 LDAP/Kerberos user federation, authentication flows, required actions, and
@@ -355,6 +365,18 @@ and `refresh_token` is a member of the enum in its own right — omit it from a
 list you do write and the application can no longer renew a token. The enum has
 no CIBA member at all. This tool always sends the field; versions below 2026.5
 ignore the unknown key, which is cheaper than version-detecting.
+
+**`post.logout.redirect.uris` uses two sentinels, not just a URL list**
+*(Keycloak 25.0.6)*
+The attribute is `##`-separated, and Keycloak writes **`+`** into it by default,
+meaning "the same URIs this client already redirects to" — not a literal URL.
+`-` means none. Since `+` is the default, essentially every migrated client
+produces a `redirect_uri_type: "logout"` entry for each of its authorization
+redirect URIs; that is Keycloak's actual policy, not duplication. The logout URL
+attributes themselves are `backchannel.logout.url` and
+`frontchannel.logout.url`, with `frontchannelLogout` as a separate boolean on the
+client object rather than an attribute — all three confirmed by writing them
+through the admin API and reading the client back.
 
 **`azuread` is still a valid `provider_type`, and `entraid` now exists too**
 *(authentik 2026.5.6)*
