@@ -14,10 +14,15 @@ identity providers, and OAuth/OIDC clients from a
 > services up, from a wiped Authentik — reconciles across dry run, `--apply`, and
 > re-run, with the re-run creating nothing.
 >
-> Two checks remain open, both needing infrastructure this project does not have:
-> no end-to-end **SAML** login has been completed (field-level evidence only; the
-> OIDC path is fully verified), and the `microsoft` → `azuread` provider mapping
-> has never been confirmed against a real Microsoft provider.
+> **Verified against authentik 2026.5.6** (and Keycloak 25.0.6): the full
+> seven-kind cycle above was re-run on a wiped 2026.5.6 rig after the version
+> bump, with 26 entities reconciling identically across all three runs.
+>
+> One check remains open: no end-to-end **SAML** login has been completed
+> (field-level evidence only; the OIDC path is fully verified, through both a
+> migrated client and a migrated identity provider). The `microsoft` → `azuread`
+> mapping is now schema-confirmed on 2026.5.6 but still untested against a real
+> Microsoft provider.
 
 ## What it does
 
@@ -200,6 +205,14 @@ Beyond the claims above, these are reported and never guessed at:
   approximated with a neighbouring grant. Every other Keycloak flow toggle —
   standard, implicit, direct access, service accounts, device code — is carried
   into the provider's `grant_types`.
+- **JWT client authentication on an identity provider.** authentik's
+  `AuthorizationCodeAuthMethodEnum` has only `basic_auth` and `post_body`, so
+  Keycloak's `client_secret_jwt` and `private_key_jwt` are reported. Substituting
+  a neighbouring method would change how the source authenticates.
+  `client_secret_post` and `client_secret_basic` map directly.
+- **Non-standard SAML name ID formats.** A `nameIDPolicyFormat` outside
+  authentik's six-member `SAMLNameIDPolicyEnum` is reported and left to
+  authentik's default; sending it would be rejected outright.
 
 **Out of scope**, deliberately: client roles as first-class objects,
 LDAP/Kerberos user federation, authentication flows, required actions, and
@@ -324,6 +337,11 @@ documentation implies. Each was observed against a running instance while
 building this tool, not inferred from docs or source. Versions are stated because
 these are version-specific observations, not permanent truths.
 
+The current verification target is **authentik 2026.5.6** and **Keycloak 25.0.6**
+— the versions the test rig pins. Observations labelled 2024.10.5 were made on
+the earlier target and have not all been re-checked individually; the full
+migration itself has been re-verified end to end on 2026.5.6.
+
 Useful whether or not you use this tool — each of these cost real debugging time.
 
 **`grant_types` on a provider exists only from authentik 2026.5** *(observed on
@@ -337,6 +355,16 @@ and `refresh_token` is a member of the enum in its own right — omit it from a
 list you do write and the application can no longer renew a token. The enum has
 no CIBA member at all. This tool always sends the field; versions below 2026.5
 ignore the unknown key, which is cheaper than version-detecting.
+
+**`azuread` is still a valid `provider_type`, and `entraid` now exists too**
+*(authentik 2026.5.6)*
+`ProviderTypeEnum` on 2026.5.6 is `openidconnect, apple, entraid, azuread,
+discord, facebook, github, gitlab, google, mailcow, okta, patreon, reddit, slack,
+twitch, twitter, wechat`. Keycloak's `microsoft` provider maps to `azuread`,
+which milestone 2 flagged as its one unconfirmed whitelist entry — the member is
+present, so the mapping is at least schema-valid. `entraid` is the newer name for
+the same identity source; this tool still writes `azuread`. Note `mailcow`,
+`patreon`, `slack` and `wechat` have no Keycloak counterpart in the whitelist.
 
 **`recovery_email` takes `email_stage` as a query parameter, not a JSON body**
 *(authentik 2024.10.5)*

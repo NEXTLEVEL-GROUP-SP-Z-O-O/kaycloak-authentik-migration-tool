@@ -58,7 +58,7 @@ services:
       retries: 20
 
   authentik-server:
-    image: ghcr.io/goauthentik/server:2024.10.5
+    image: ghcr.io/goauthentik/server:2026.5.6
     command: server
     environment: &authentik-env
       AUTHENTIK_SECRET_KEY: kc2ak-local-throwaway-secret-key-change-me
@@ -87,7 +87,7 @@ services:
       retries: 20
 
   authentik-worker:
-    image: ghcr.io/goauthentik/server:2024.10.5
+    image: ghcr.io/goauthentik/server:2026.5.6
     command: worker
     environment: *authentik-env
     depends_on:

@@ -64,6 +64,28 @@ _OAUTH_PROVIDER_TYPES = {
 
 _SAML_PROVIDER_ID = "saml"
 
+# authentik's AuthorizationCodeAuthMethodEnum, read from /api/v3/schema/ on
+# 2026.5.6. Keycloak's remaining values (client_secret_jwt, private_key_jwt)
+# have no member and are reported by unmapped_idp_fields rather than
+# approximated -- how a client authenticates is security-relevant.
+_AUTH_CODE_AUTH_METHODS = {
+    "client_secret_post": "post_body",
+    "client_secret_basic": "basic_auth",
+}
+
+# authentik's SAMLNameIDPolicyEnum, same source. Keycloak stores the format as
+# the same URN string, so a member passes through unchanged.
+_SAML_NAME_ID_POLICIES = frozenset(
+    {
+        "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
+        "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent",
+        "urn:oasis:names:tc:SAML:1.1:nameid-format:X509SubjectName",
+        "urn:oasis:names:tc:SAML:2.0:nameid-format:WindowsDomainQualifiedName",
+        "urn:oasis:names:tc:SAML:2.0:nameid-format:transient",
+        "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified",
+    }
+)
+
 
 def source_kind(provider_id: str) -> str | None:
     """ "oauth", "saml", or None when the providerId is not in the whitelist
@@ -167,7 +189,48 @@ def map_oauth_source(
         payload["authentication_flow"] = authentication_flow
     if enrollment_flow is not None:
         payload["enrollment_flow"] = enrollment_flow
+    auth_method = _AUTH_CODE_AUTH_METHODS.get(config.get("clientAuthMethod", ""))
+    if auth_method is not None:
+        payload["authorization_code_auth_method"] = auth_method
     return payload
+
+
+def unmapped_idp_fields(kc_idp: dict[str, Any]) -> list[dict[str, str]]:
+    """Config values with no faithful target on the authentik side. Only
+    recorded when the source actually carries one -- an absent field is not
+    a loss (mappers/clients.py's unmapped_client_fields makes the same call).
+    """
+    config = kc_idp.get("config") or {}
+    entries: list[dict[str, str]] = []
+
+    # authentik's AuthorizationCodeAuthMethodEnum has only basic_auth and
+    # post_body. Keycloak's JWT-based client authentication (client_secret_jwt,
+    # private_key_jwt) has no member, and picking the nearest one would change
+    # how the source authenticates to the provider -- a security-relevant
+    # substitution, so it is reported instead.
+    method = config.get("clientAuthMethod")
+    if method and method not in _AUTH_CODE_AUTH_METHODS:
+        entries.append(
+            {
+                "type": "idp_field",
+                "name": "clientAuthMethod",
+                "why": f"no authentik equivalent for {method}",
+            }
+        )
+
+    # SAMLNameIDPolicyEnum covers the six standard formats; a Keycloak realm
+    # can carry a non-standard one, which authentik would reject outright.
+    name_id = config.get("nameIDPolicyFormat")
+    if name_id and name_id not in _SAML_NAME_ID_POLICIES:
+        entries.append(
+            {
+                "type": "idp_field",
+                "name": "nameIDPolicyFormat",
+                "why": f"not a SAML name ID policy authentik accepts: {name_id}",
+            }
+        )
+
+    return entries
 
 
 def pem_certificate(der_base64: str) -> str:
@@ -234,6 +297,12 @@ def map_saml_source(
         payload["authentication_flow"] = authentication_flow
     if enrollment_flow is not None:
         payload["enrollment_flow"] = enrollment_flow
+    # Keycloak stores the format as the same URN authentik's enum uses, so a
+    # recognised value passes through untouched. Anything else is left to
+    # authentik's own default and reported by unmapped_idp_fields -- sending
+    # an unrecognised URN would be rejected outright.
+    if config.get("nameIDPolicyFormat") in _SAML_NAME_ID_POLICIES:
+        payload["name_id_policy"] = config["nameIDPolicyFormat"]
     return payload
 
 

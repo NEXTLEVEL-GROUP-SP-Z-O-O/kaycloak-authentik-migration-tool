@@ -20,6 +20,7 @@ from kc2ak.mappers.idps import (
     pem_certificate,
     resolved_secret,
     source_kind,
+    unmapped_idp_fields,
     unmapped_idp_mappers,
 )
 
@@ -286,3 +287,54 @@ def test_unmapped_idp_mappers_reports_the_seeded_mapper() -> None:
 def test_unmapped_idp_mappers_empty_when_none() -> None:
     assert unmapped_idp_mappers(_mappers("corporate-saml")) == []
     assert unmapped_idp_mappers([]) == []
+
+
+# --- 2026.5.6 fields: auth method and SAML name ID policy --------------------
+
+
+def _oidc_idp(**config: str) -> dict[str, object]:
+    base = {"clientId": "cid", "clientSecret": "s"}
+    base.update(config)
+    return {"alias": "sso", "providerId": "oidc", "config": base}
+
+
+def test_oauth_source_maps_keycloak_client_auth_method() -> None:
+    post = map_oauth_source(_oidc_idp(clientAuthMethod="client_secret_post"), secret="s")
+    assert post["authorization_code_auth_method"] == "post_body"
+    basic = map_oauth_source(_oidc_idp(clientAuthMethod="client_secret_basic"), secret="s")
+    assert basic["authorization_code_auth_method"] == "basic_auth"
+
+
+def test_oauth_source_omits_auth_method_with_no_equivalent() -> None:
+    # authentik has only basic_auth/post_body; substituting one for a JWT
+    # method would change how the source authenticates.
+    payload = map_oauth_source(_oidc_idp(clientAuthMethod="private_key_jwt"), secret="s")
+    assert "authorization_code_auth_method" not in payload
+    names = {e["name"] for e in unmapped_idp_fields(_oidc_idp(clientAuthMethod="private_key_jwt"))}
+    assert "clientAuthMethod" in names
+
+
+def test_oauth_source_silent_when_keycloak_sets_no_auth_method() -> None:
+    assert unmapped_idp_fields(_oidc_idp()) == []
+
+
+def _saml_idp(name_id: str) -> dict[str, object]:
+    return {
+        "alias": "saml",
+        "providerId": "saml",
+        "config": {"singleSignOnServiceUrl": "https://x/sso", "nameIDPolicyFormat": name_id},
+    }
+
+
+def test_saml_source_passes_through_recognised_name_id_policy() -> None:
+    idp = _saml_idp("urn:oasis:names:tc:SAML:2.0:nameid-format:persistent")
+    payload = map_saml_source(idp, pre_authentication_flow="f", signing_kp=None)
+    assert payload["name_id_policy"] == "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent"
+    assert unmapped_idp_fields(idp) == []
+
+
+def test_saml_source_reports_name_id_policy_authentik_would_reject() -> None:
+    idp = _saml_idp("urn:example:custom-format")
+    payload = map_saml_source(idp, pre_authentication_flow="f", signing_kp=None)
+    assert "name_id_policy" not in payload  # sending it would 400
+    assert {e["name"] for e in unmapped_idp_fields(idp)} == {"nameIDPolicyFormat"}

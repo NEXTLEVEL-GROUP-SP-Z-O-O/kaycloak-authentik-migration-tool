@@ -39,6 +39,7 @@ from kc2ak.mappers.idps import (
     pem_certificate,
     resolved_secret,
     source_kind,
+    unmapped_idp_fields,
     unmapped_idp_mappers,
 )
 from kc2ak.mappers.protocol_mappers import translate_client_protocol_mappers
@@ -236,6 +237,7 @@ def migrate_idps(
         provider_id = kc_idp["providerId"]
         kc_id = kc_idp.get("internalId") or alias
         unmapped = unmapped_idp_mappers(kc.get_idp_mappers(realm, alias))
+        unmapped.extend(unmapped_idp_fields(kc_idp))
         kind = source_kind(provider_id)
 
         if kind is None:
